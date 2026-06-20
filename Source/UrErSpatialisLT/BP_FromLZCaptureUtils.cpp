@@ -8,11 +8,15 @@
 #include "Engine/World.h"
 #include "UnrealClient.h"
 
-UBP_FromLZCaptureUtils* UBP_FromLZCaptureUtils::CaptureFromCamera(UObject* WorldContextObject, UCameraComponent* CameraComponent)
+UBP_FromLZCaptureUtils* UBP_FromLZCaptureUtils::CaptureFromCamera(
+	UObject* WorldContextObject,
+	UCameraComponent* CameraComponent,
+	FIntPoint CaptureResolutionOverride)
 {
 	UBP_FromLZCaptureUtils* Action = NewObject<UBP_FromLZCaptureUtils>();
 	Action->WorldContextObject = WorldContextObject;
 	Action->CameraComponent = CameraComponent;
+	Action->CaptureResolutionOverride = CaptureResolutionOverride;
 	if (WorldContextObject)
 	{
 		Action->RegisterWithGameInstance(WorldContextObject);
@@ -34,6 +38,7 @@ void UBP_FromLZCaptureUtils::Activate()
 		World,
 		Viewport,
 		CameraComponent.Get(),
+		CaptureResolutionOverride,
 		[WeakThis](const FFromLZCaptureResult& Result)
 		{
 			if (!WeakThis.IsValid())

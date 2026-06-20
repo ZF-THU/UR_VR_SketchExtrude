@@ -29,8 +29,11 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FBPFromLZCaptureFailed OnFailed;
 
-	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "BP FromLZ Capture From Camera", Category = "FromLZ|Capture"))
-	static UBP_FromLZCaptureUtils* CaptureFromCamera(UObject* WorldContextObject, UCameraComponent* CameraComponent);
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "BP FromLZ Capture From Camera", Category = "FromLZ|Capture", AdvancedDisplay = "CaptureResolutionOverride", CaptureResolutionOverride = "(X=1920,Y=1080)"))
+	static UBP_FromLZCaptureUtils* CaptureFromCamera(
+		UObject* WorldContextObject,
+		UCameraComponent* CameraComponent,
+		FIntPoint CaptureResolutionOverride);
 
 	virtual void Activate() override;
 
@@ -40,4 +43,7 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UCameraComponent> CameraComponent = nullptr;
+
+	UPROPERTY()
+	FIntPoint CaptureResolutionOverride = FIntPoint(1920, 1080);
 };

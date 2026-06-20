@@ -1429,6 +1429,7 @@ static bool BuildOffscreenOrthographicCaptureView(
 	FViewport* Viewport,
 	const TArray<AActor*>& FramingActors,
 	bool bAllowSubjectBoundsCenterOrthoWidth,
+	FIntPoint CaptureResolutionOverride,
 	FFromLZCaptureView& OutView,
 	FFromLZCameraProjectionSnapshot& OutSourceProjection,
 	bool& bOutUsedDefaultOrthoWidth,
@@ -1441,7 +1442,9 @@ static bool BuildOffscreenOrthographicCaptureView(
 		return false;
 	}
 
-	const FIntPoint MaxSize = Viewport->GetSizeXY();
+	const FIntPoint MaxSize = (CaptureResolutionOverride.X > 0 && CaptureResolutionOverride.Y > 0)
+		? CaptureResolutionOverride
+		: Viewport->GetSizeXY();
 	OutSourceProjection = MakeCameraProjectionSnapshot(Camera);
 
 	const FTransform SourceTransform = Camera->GetComponentTransform();
@@ -2755,7 +2758,8 @@ static bool BeginResolvedOffscreenCapture(
 	FName RequestedCameraTag,
 	bool bAllowSubjectBoundsCenterOrthoWidth,
 	bool bOpenSketchBoardOnSuccess = true,
-	FFromLZCaptureCompletionCallback CompletionCallback = nullptr)
+	FFromLZCaptureCompletionCallback CompletionCallback = nullptr,
+	FIntPoint CaptureResolutionOverride = FIntPoint(0, 0))
 {
 	if (!World || !Viewport || !Pawn || !CameraActor || !Camera)
 	{
@@ -2797,6 +2801,7 @@ static bool BeginResolvedOffscreenCapture(
 		Viewport,
 		FramingActors,
 		bAllowSubjectBoundsCenterOrthoWidth,
+		CaptureResolutionOverride,
 		Pending->CaptureView,
 		Pending->SourceCameraProjection,
 		Pending->bSourceOrthoWidthUsedDefault,
@@ -2946,6 +2951,7 @@ bool FFromLZCaptureUtils::BeginCaptureFromCameraComponent(
 	const UWorld* World,
 	FViewport* Viewport,
 	UCameraComponent* CameraComponent,
+	FIntPoint CaptureResolutionOverride,
 	FFromLZCaptureCompletionCallback CompletionCallback)
 {
 	if (!PrepareForNewOffscreenCapture(World, Viewport))
@@ -3009,7 +3015,8 @@ bool FFromLZCaptureUtils::BeginCaptureFromCameraComponent(
 		NAME_None,
 		/*bAllowSubjectBoundsCenterOrthoWidth*/ false,
 		/*bOpenSketchBoardOnSuccess*/ false,
-		MoveTemp(CompletionCallback));
+		MoveTemp(CompletionCallback),
+		CaptureResolutionOverride);
 }
 
 void FFromLZCaptureUtils::CancelPendingCapture()
