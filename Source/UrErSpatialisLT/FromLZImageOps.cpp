@@ -6544,6 +6544,13 @@ namespace FromLZImageOps
 			Json += FString::Printf(TEXT("    \"green_prefilter_reason\": \"%s\",\n"), *JsonEscaped(C.GreenPrefilterReason));
 			Json += FString::Printf(TEXT("    \"face_evaluation_valid\": %s,\n"), C.bHasValidFaceEvaluation ? TEXT("true") : TEXT("false"));
 			Json += FString::Printf(TEXT("    \"face_evaluation_reason\": \"%s\",\n"), *JsonEscaped(C.FaceEvaluationReason));
+			Json += FString::Printf(TEXT("    \"face_evaluation_mode\": \"%s\",\n"), *JsonEscaped(C.Result.FaceEvaluationMode));
+			Json += FString::Printf(TEXT("    \"direct_face_evaluation_valid\": %s,\n"), C.Result.bFaceEvaluationValid ? TEXT("true") : TEXT("false"));
+			Json += FString::Printf(TEXT("    \"attach_support_plane_fallback_eligible\": %s,\n"), C.Result.bAttachSupportPlaneFallbackEligible ? TEXT("true") : TEXT("false"));
+			Json += FString::Printf(TEXT("    \"support_face_id\": %d,\n"), C.Result.SupportFaceId);
+			Json += FString::Printf(TEXT("    \"support_green_chain_index\": %d,\n"), C.Result.SupportGreenChainIndex);
+			Json += FString::Printf(TEXT("    \"support_face_vote_coverage\": %.6f,\n"), C.Result.SupportFaceVoteCoverage);
+			Json += FString::Printf(TEXT("    \"support_face_reject_reason\": \"%s\",\n"), *JsonEscaped(C.Result.SupportFaceRejectReason));
 			Json += FString::Printf(TEXT("    \"rejected_by_interior_red\": %s,\n"), C.bRejectedByInteriorRed ? TEXT("true") : TEXT("false"));
 			Json += FString::Printf(TEXT("    \"interior_red_reject_reason\": \"%s\",\n"), *JsonEscaped(C.InteriorRedRejectReason));
 			Json += FString::Printf(TEXT("    \"face_source_polygon\": \"%s\",\n"), *JsonEscaped(C.Result.FaceEvaluationSourcePolygon));
@@ -7248,6 +7255,7 @@ namespace FromLZImageOps
 		Out.SideCandidateVectors.Reset();
 		Out.SideCandidateStarts.Reset();
 		Out.SideCandidateEnds.Reset();
+		Out.GreenChainCandidates.Reset();
 		Out.SideStrokeId = -1;
 		Out.SideVector = FVector2D::ZeroVector;
 		Out.SideLength = 0.0;
@@ -7259,7 +7267,7 @@ namespace FromLZImageOps
 		Out.SideTraceTotalGap = 0.0;
 		Out.SideTraceStopReason = TEXT("no_local_green_seed");
 
-		FGreenSideTraceCandidate Best;
+		TArray<FGreenSideTraceCandidate> UniqueCandidates;
 		TSet<FString> SeenChainKeys;
 		for (int32 SeedStrokeId : LocalGreenSeeds)
 		{
@@ -7276,17 +7284,43 @@ namespace FromLZImageOps
 				continue;
 			}
 			SeenChainKeys.Add(ChainKey);
-
-			const bool bLongerPath = !Best.bValid || Candidate.PathLength > Best.PathLength + 1e-6;
-			const bool bSamePathButLongerChord =
-				Best.bValid && FMath::IsNearlyEqual(Candidate.PathLength, Best.PathLength, 1e-6) &&
-				Candidate.SideLength > Best.SideLength + 1e-6;
-			if (bLongerPath || bSamePathButLongerChord)
-			{
-				Best = Candidate;
-			}
+			UniqueCandidates.Add(Candidate);
 		}
 
+		UniqueCandidates.Sort([](const FGreenSideTraceCandidate& A, const FGreenSideTraceCandidate& B)
+		{
+			if (!FMath::IsNearlyEqual(A.PathLength, B.PathLength, 1e-6))
+			{
+				return A.PathLength > B.PathLength;
+			}
+			if (!FMath::IsNearlyEqual(A.SideLength, B.SideLength, 1e-6))
+			{
+				return A.SideLength > B.SideLength;
+			}
+			return A.SeedStrokeId < B.SeedStrokeId;
+		});
+
+		for (const FGreenSideTraceCandidate& Candidate : UniqueCandidates)
+		{
+			FGreenChainCandidate OutCandidate;
+			OutCandidate.SeedStrokeId = Candidate.SeedStrokeId;
+			OutCandidate.StrokeIds = Candidate.ChainStrokeIds;
+			OutCandidate.Start = Candidate.ChainStart;
+			OutCandidate.End = Candidate.ChainEnd;
+			OutCandidate.Vector = Candidate.ChainEnd - Candidate.ChainStart;
+			OutCandidate.SeedDirection = Candidate.SeedDirection;
+			OutCandidate.ChordLength = Candidate.SideLength;
+			OutCandidate.PathLength = Candidate.PathLength;
+			OutCandidate.TotalGap = Candidate.TotalGap;
+			OutCandidate.StopReason = Candidate.StopReason;
+			Out.GreenChainCandidates.Add(MoveTemp(OutCandidate));
+			Out.SideCandidateStarts.Add(Candidate.ChainStart);
+			Out.SideCandidateEnds.Add(Candidate.ChainEnd);
+			Out.SideCandidateVectors.Add(Candidate.ChainEnd - Candidate.ChainStart);
+		}
+
+		const FGreenSideTraceCandidate Best =
+			UniqueCandidates.Num() > 0 ? UniqueCandidates[0] : FGreenSideTraceCandidate();
 		if (Best.bValid)
 		{
 			const FVector2D ChainVector = Best.ChainEnd - Best.ChainStart;
@@ -7300,9 +7334,6 @@ namespace FromLZImageOps
 			Out.SideTraceTotalGap = Best.TotalGap;
 			Out.SideTraceStopReason = Best.StopReason;
 			Out.SideVector = ChainVector;
-			Out.SideCandidateStarts.Add(Best.ChainStart);
-			Out.SideCandidateEnds.Add(Best.ChainEnd);
-			Out.SideCandidateVectors.Add(Out.SideVector);
 		}
 		Out.CapPolygonTranslated.Reset();
 		Out.CapPolygonTranslated.Reserve(Out.CapPolygon.Num());
@@ -7395,7 +7426,7 @@ namespace FromLZImageOps
 				*Candidate.Result.ActionDecisionReason);
 	}
 
-	int32 RecoverCapExtrusionsPerComponent(const TArray<FColoredStroke>& Strokes, float ConnectorTol, float BlackSelectTol, int32 Width, int32 Height, const FString& PressDir, const FString& ActionPressDir, TArray<FCapExtrusionResult>& OutResults)
+	int32 RecoverCapExtrusionsPerComponent(const TArray<FColoredStroke>& Strokes, float ConnectorTol, float BlackSelectTol, int32 Width, int32 Height, const FString& PressDir, const FString& ActionPressDir, const FFromLZFaceReconstructionParams& FaceParams, TArray<FCapExtrusionResult>& OutResults)
 	{
 		using namespace CapOps;
 		OutResults.Reset();
@@ -7495,6 +7526,22 @@ namespace FromLZImageOps
 			Request.CapPolygon = Candidate.Result.CapPolygon;
 			Request.CapPolygonTranslated = Candidate.Result.CapPolygonTranslated;
 			Request.SideVectors = Candidate.Result.SideCandidateVectors;
+			Request.GreenChains.Reserve(Candidate.Result.GreenChainCandidates.Num());
+			for (const FGreenChainCandidate& Chain : Candidate.Result.GreenChainCandidates)
+			{
+				FFromLZGreenChainCandidate2D RequestChain;
+				RequestChain.SeedStrokeId = Chain.SeedStrokeId;
+				RequestChain.StrokeIds = Chain.StrokeIds;
+				RequestChain.Start = Chain.Start;
+				RequestChain.End = Chain.End;
+				RequestChain.Vector = Chain.Vector;
+				RequestChain.SeedDirection = Chain.SeedDirection;
+				RequestChain.ChordLength = Chain.ChordLength;
+				RequestChain.PathLength = Chain.PathLength;
+				RequestChain.TotalGap = Chain.TotalGap;
+				RequestChain.StopReason = Chain.StopReason;
+				Request.GreenChains.Add(MoveTemp(RequestChain));
+			}
 			if (Request.SideVectors.Num() == 0 && Candidate.Result.SideVector.SizeSquared() > 1e-8)
 			{
 				Request.SideVectors.Add(Candidate.Result.SideVector);
@@ -7505,7 +7552,7 @@ namespace FromLZImageOps
 		TArray<FFromLZCandidateFaceEvaluation> FaceEvaluations;
 		FString FaceEvaluationError;
 		const bool bFaceEvaluationBatchReady = FFromLZFaceReconstructor::EvaluateCandidateFaces(
-			PressDir, Width, Height, FaceRequests, FaceEvaluations, FaceEvaluationError);
+			PressDir, Width, Height, FaceRequests, FaceParams, FaceEvaluations, FaceEvaluationError);
 		for (int32 CandidateIndex = 0; CandidateIndex < Candidates.Num(); ++CandidateIndex)
 		{
 			FLoopCandidate& Candidate = Candidates[CandidateIndex];
@@ -7525,9 +7572,12 @@ namespace FromLZImageOps
 			}
 
 			const FFromLZCandidateFaceEvaluation& Evaluation = FaceEvaluations[CandidateIndex];
-			Candidate.bHasValidFaceEvaluation = Evaluation.bValid;
-			Candidate.FaceEvaluationReason = Evaluation.RejectReason;
+			Candidate.bHasValidFaceEvaluation = Evaluation.bValid || Evaluation.bAttachSupportPlaneFallbackEligible;
+			Candidate.FaceEvaluationReason = Evaluation.bAttachSupportPlaneFallbackEligible && !Evaluation.SupportFaceRejectReason.IsEmpty()
+				? Evaluation.SupportFaceRejectReason
+				: Evaluation.RejectReason;
 			Candidate.Result.bFaceEvaluationValid = Evaluation.bValid;
+			Candidate.Result.FaceEvaluationMode = Evaluation.EvaluationMode;
 			Candidate.Result.FaceEvaluationSourcePolygon = Evaluation.SourcePolygonKey;
 			Candidate.Result.FaceEvaluationRejectReason = Evaluation.RejectReason;
 			Candidate.Result.FaceEvaluationCapMaskPixels = Evaluation.CapMaskPixels;
@@ -7536,6 +7586,11 @@ namespace FromLZImageOps
 			Candidate.Result.PreselectedFaceOverlapRatio = Evaluation.SelectedFaceOverlapRatio;
 			Candidate.Result.PreselectedFaceNormalSideAngleDegrees = Evaluation.SelectedFaceNormalSideAngleDegrees;
 			Candidate.Result.PreselectedFaceDistanceToCamera = Evaluation.SelectedFaceDistanceToCamera;
+			Candidate.Result.bAttachSupportPlaneFallbackEligible = Evaluation.bAttachSupportPlaneFallbackEligible;
+			Candidate.Result.SupportFaceId = Evaluation.SupportFaceId;
+			Candidate.Result.SupportGreenChainIndex = Evaluation.SupportGreenChainIndex;
+			Candidate.Result.SupportFaceVoteCoverage = Evaluation.SupportFaceVoteCoverage;
+			Candidate.Result.SupportFaceRejectReason = Evaluation.SupportFaceRejectReason;
 		}
 
 		TArray<int32> SelectedCandidateIndices;
@@ -7723,6 +7778,7 @@ namespace FromLZImageOps
 		Json += FString::Printf(TEXT("  \"candidate_source\": \"%s\",\n"), *Res.CandidateSource);
 		Json += FString::Printf(TEXT("  \"candidate_anchor_stroke_id\": %d,\n"), Res.CandidateAnchorStrokeId);
 		Json += FString::Printf(TEXT("  \"face_evaluation_valid\": %s,\n"), Res.bFaceEvaluationValid ? TEXT("true") : TEXT("false"));
+		Json += FString::Printf(TEXT("  \"face_evaluation_mode\": \"%s\",\n"), *JsonEscaped(Res.FaceEvaluationMode));
 		Json += FString::Printf(TEXT("  \"face_evaluation_source_polygon\": \"%s\",\n"), *JsonEscaped(Res.FaceEvaluationSourcePolygon));
 		Json += FString::Printf(TEXT("  \"face_evaluation_reject_reason\": \"%s\",\n"), *JsonEscaped(Res.FaceEvaluationRejectReason));
 		Json += FString::Printf(TEXT("  \"face_evaluation_cap_mask_pixels\": %d,\n"), Res.FaceEvaluationCapMaskPixels);
@@ -7731,6 +7787,11 @@ namespace FromLZImageOps
 		Json += FString::Printf(TEXT("  \"preselected_face_overlap_ratio\": %.6f,\n"), Res.PreselectedFaceOverlapRatio);
 		Json += FString::Printf(TEXT("  \"preselected_face_normal_side_angle_degrees\": %.6f,\n"), Res.PreselectedFaceNormalSideAngleDegrees);
 		Json += FString::Printf(TEXT("  \"preselected_face_distance_to_camera\": %.6f,\n"), Res.PreselectedFaceDistanceToCamera);
+		Json += FString::Printf(TEXT("  \"attach_support_plane_fallback_eligible\": %s,\n"), Res.bAttachSupportPlaneFallbackEligible ? TEXT("true") : TEXT("false"));
+		Json += FString::Printf(TEXT("  \"support_face_id\": %d,\n"), Res.SupportFaceId);
+		Json += FString::Printf(TEXT("  \"support_green_chain_index\": %d,\n"), Res.SupportGreenChainIndex);
+		Json += FString::Printf(TEXT("  \"support_face_vote_coverage\": %.6f,\n"), Res.SupportFaceVoteCoverage);
+		Json += FString::Printf(TEXT("  \"support_face_reject_reason\": \"%s\",\n"), *JsonEscaped(Res.SupportFaceRejectReason));
 
 		// Selected green side stroke (chord vector + endpoint segment).
 		Json += TEXT("  \"side_vectors\": [");
@@ -7749,6 +7810,31 @@ namespace FromLZImageOps
 				Res.SideCandidateEnds[i].X, Res.SideCandidateEnds[i].Y);
 		}
 		Json += TEXT("],\n");
+
+		Json += TEXT("  \"green_chain_candidates\": [\n");
+		for (int32 i = 0; i < Res.GreenChainCandidates.Num(); ++i)
+		{
+			const FGreenChainCandidate& Chain = Res.GreenChainCandidates[i];
+			Json += TEXT("    {\n");
+			Json += FString::Printf(TEXT("      \"index\": %d,\n"), i);
+			Json += FString::Printf(TEXT("      \"seed_stroke_id\": %d,\n"), Chain.SeedStrokeId);
+			Json += TEXT("      \"stroke_ids\": [");
+			for (int32 StrokeIndex = 0; StrokeIndex < Chain.StrokeIds.Num(); ++StrokeIndex)
+			{
+				Json += FString::Printf(TEXT("%s%d"), StrokeIndex == 0 ? TEXT("") : TEXT(", "), Chain.StrokeIds[StrokeIndex]);
+			}
+			Json += TEXT("],\n");
+			Json += FString::Printf(TEXT("      \"start\": [%.6f, %.6f],\n"), Chain.Start.X, Chain.Start.Y);
+			Json += FString::Printf(TEXT("      \"end\": [%.6f, %.6f],\n"), Chain.End.X, Chain.End.Y);
+			Json += FString::Printf(TEXT("      \"vector\": [%.6f, %.6f],\n"), Chain.Vector.X, Chain.Vector.Y);
+			Json += FString::Printf(TEXT("      \"seed_direction\": [%.6f, %.6f],\n"), Chain.SeedDirection.X, Chain.SeedDirection.Y);
+			Json += FString::Printf(TEXT("      \"chord_length\": %.9g,\n"), Chain.ChordLength);
+			Json += FString::Printf(TEXT("      \"path_length\": %.9g,\n"), Chain.PathLength);
+			Json += FString::Printf(TEXT("      \"total_gap\": %.9g,\n"), Chain.TotalGap);
+			Json += FString::Printf(TEXT("      \"stop_reason\": \"%s\"\n"), *JsonEscaped(Chain.StopReason));
+			Json += FString::Printf(TEXT("    }%s\n"), i + 1 < Res.GreenChainCandidates.Num() ? TEXT(",") : TEXT(""));
+		}
+		Json += TEXT("  ],\n");
 
 		Json += TEXT("  \"cap_stroke_ids\": [");
 		for (int32 i = 0; i < Res.CapStrokeIds.Num(); ++i)

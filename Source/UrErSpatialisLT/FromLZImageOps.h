@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 
+struct FFromLZFaceReconstructionParams;
+
 // Low-level single-channel (8-bit) image operations used by the 2D sketch
 // pipeline. Masks are stored row-major in a TArray<uint8> of size Width*Height,
 // with foreground = 255 and background = 0 unless noted otherwise.
@@ -158,6 +160,20 @@ namespace FromLZImageOps
 		double Straightness = 0.0;
 	};
 
+	struct FGreenChainCandidate
+	{
+		int32 SeedStrokeId = -1;
+		TArray<int32> StrokeIds;
+		FVector2D Start = FVector2D::ZeroVector;
+		FVector2D End = FVector2D::ZeroVector;
+		FVector2D Vector = FVector2D::ZeroVector;
+		FVector2D SeedDirection = FVector2D::ZeroVector;
+		double ChordLength = 0.0;
+		double PathLength = 0.0;
+		double TotalGap = 0.0;
+		FString StopReason;
+	};
+
 	struct FCapExtrusionResult
 	{
 		bool bFound = false;
@@ -197,8 +213,10 @@ namespace FromLZImageOps
 		TArray<FVector2D> SideCandidateVectors;
 		TArray<FVector2D> SideCandidateStarts;
 		TArray<FVector2D> SideCandidateEnds;
+		TArray<FGreenChainCandidate> GreenChainCandidates;
 
 		bool bFaceEvaluationValid = false;
+		FString FaceEvaluationMode;
 		FString FaceEvaluationSourcePolygon;
 		FString FaceEvaluationRejectReason;
 		int32 FaceEvaluationCapMaskPixels = 0;
@@ -207,6 +225,11 @@ namespace FromLZImageOps
 		double PreselectedFaceOverlapRatio = 0.0;
 		double PreselectedFaceNormalSideAngleDegrees = -1.0;
 		double PreselectedFaceDistanceToCamera = 0.0;
+		bool bAttachSupportPlaneFallbackEligible = false;
+		int32 SupportFaceId = -1;
+		int32 SupportGreenChainIndex = -1;
+		double SupportFaceVoteCoverage = 0.0;
+		FString SupportFaceRejectReason;
 	};
 
 	// Step 9: detect every red cap loop in one pipeline run and recover its extrusion.
@@ -240,7 +263,7 @@ namespace FromLZImageOps
 	// and fills OutResults (one per Component_%%, in folder order).
 	// After planarization and connector insertion, graph endpoints within 5px are
 	// merged into shared nodes before the existing component extraction begins.
-	int32 RecoverCapExtrusionsPerComponent(const TArray<FColoredStroke>& Strokes, float ConnectorTol, float BlackSelectTol, int32 Width, int32 Height, const FString& PressDir, const FString& ActionPressDir, TArray<FCapExtrusionResult>& OutResults);
+	int32 RecoverCapExtrusionsPerComponent(const TArray<FColoredStroke>& Strokes, float ConnectorTol, float BlackSelectTol, int32 Width, int32 Height, const FString& PressDir, const FString& ActionPressDir, const FFromLZFaceReconstructionParams& FaceParams, TArray<FCapExtrusionResult>& OutResults);
 
 	// Debug render of the recovered extrusion: cap loop, translated cap, and side connectors.
 	bool SaveCapExtrusionPng(const TArray<FColoredStroke>& Strokes, const FCapExtrusionResult& Res, int32 Width, int32 Height, const FString& Path, int32 Thickness = 2);

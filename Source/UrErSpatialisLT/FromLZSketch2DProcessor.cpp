@@ -506,7 +506,8 @@ bool FFromLZSketch2DProcessor::ProcessCompositeWithGeneration(
 	// graph and an independent real-red-segment/black-segment fallback pass within 20px.
 	TArray<FromLZImageOps::FCapExtrusionResult> Caps;
 	const int32 NumCaps = FromLZImageOps::RecoverCapExtrusionsPerComponent(
-		Merged, Params.Step9ConnectorTol, Params.Step9BlackSelectTol, Width, Height, PressDir, ActionPressDir, Caps);
+		Merged, Params.Step9ConnectorTol, Params.Step9BlackSelectTol, Width, Height, PressDir, ActionPressDir,
+		Params.ToFaceReconstructionParams(), Caps);
 
 	// ---- Step 10/11: face validation -> solid rebuild -> runtime spawn/Boolean --
 	if (!FFromLZSessionReset::IsSessionGenerationCurrent(SessionGeneration))
@@ -520,7 +521,13 @@ bool FFromLZSketch2DProcessor::ProcessCompositeWithGeneration(
 		DispatchPressCallback(CompletionCallback, Result);
 		return false;
 	}
-	FFromLZFaceReconstructor::ProcessPress(PressDir, ActionPressDir, World, SessionGeneration, MoveTemp(CompletionCallback));
+	FFromLZFaceReconstructor::ProcessPress(
+		PressDir,
+		ActionPressDir,
+		World,
+		Params.ToFaceReconstructionParams(),
+		SessionGeneration,
+		MoveTemp(CompletionCallback));
 
 	const double Elapsed = FPlatformTime::Seconds() - StartTime;
 	UE_LOG(LogTemp, Log, TEXT("Sketch2D: steps 1-11 dispatched in %.3fs (%dx%d): %d merged strokes; %d cap component(s) -> %s"),

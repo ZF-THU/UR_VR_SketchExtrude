@@ -353,6 +353,22 @@ FFromLZProcessParams FBPFromLZProcessParams::ToCoreParams() const
 	Params.SupportForcePreferredMinGreenChordCm = FMath::Max(
 		Params.SupportForceHardMinGreenChordCm,
 		SupportForcePreferredMinGreenChordCm);
+	Params.bWorldOrthoUsePerFaceCapture = bWorldOrthoUsePerFaceCapture;
+	Params.WorldOrthoPerFaceClipMarginPixels = FMath::Max(0.0f, WorldOrthoPerFaceClipMarginPixels);
+	Params.bWorldOrthoPureRedAllowDiagonalRoot = bWorldOrthoPureRedAllowDiagonalRoot;
+	Params.bWorldOrthoAllowDiagonalSupports = bWorldOrthoAllowDiagonalSupports;
+	Params.WorldOrthoMaxWrapGapFraction = FMath::Clamp(WorldOrthoMaxWrapGapFraction, 0.0f, 1.0f);
+	Params.bWorldOrthoAllowTopologyRepair = bWorldOrthoAllowTopologyRepair;
+	Params.WorldOrthoBlackAxisToleranceDegrees = FMath::Clamp(WorldOrthoBlackAxisToleranceDegrees, 0.0f, 180.0f);
+	Params.WorldOrthoDiagThresholdDegrees = FMath::Clamp(WorldOrthoDiagThresholdDegrees, 0.0f, 90.0f);
+	Params.WorldOrthoAngleComparisonEpsilonDegrees = FMath::Max(0.0f, WorldOrthoAngleComparisonEpsilonDegrees);
+	Params.WorldOrthoBlackNodeSnapTolerancePixels = FMath::Max(0.0f, WorldOrthoBlackNodeSnapTolerancePixels);
+	Params.WorldOrthoRedMacroCorridorPixels = FMath::Max(0.0f, WorldOrthoRedMacroCorridorPixels);
+	Params.WorldOrthoRedMacroGroupMinLengthPixels = FMath::Max(0.0f, WorldOrthoRedMacroGroupMinLengthPixels);
+	Params.WorldOrthoRedPrimitiveRdpTolerancePixels = FMath::Max(0.0f, WorldOrthoRedPrimitiveRdpTolerancePixels);
+	Params.WorldOrthoShortRedEdgeLengthPixels = FMath::Max(0.0f, WorldOrthoShortRedEdgeLengthPixels);
+	Params.WorldOrthoMinAreaRatio = FMath::Max(0.0f, WorldOrthoMinAreaRatio);
+	Params.WorldOrthoPureRedMaxRootCandidates = FMath::Max(0, WorldOrthoPureRedMaxRootCandidates);
 	Params.CompositeMaxWorkers = CompositeMaxWorkers;
 	Params.ParallelForMaxThreads = ParallelForMaxThreads;
 	return Params;

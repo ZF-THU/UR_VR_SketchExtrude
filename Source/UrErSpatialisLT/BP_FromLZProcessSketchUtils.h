@@ -151,6 +151,54 @@ struct FBPFromLZProcessParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float SupportForcePreferredMinGreenChordCm = 5.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal")
+	bool bWorldOrthoUsePerFaceCapture = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float WorldOrthoPerFaceClipMarginPixels = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal")
+	bool bWorldOrthoPureRedAllowDiagonalRoot = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal")
+	bool bWorldOrthoAllowDiagonalSupports = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	float WorldOrthoMaxWrapGapFraction = 0.1f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal")
+	bool bWorldOrthoAllowTopologyRepair = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", ClampMax = "180.0", UIMin = "0.0", UIMax = "180.0"))
+	float WorldOrthoBlackAxisToleranceDegrees = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", ClampMax = "90.0", UIMin = "0.0", UIMax = "90.0"))
+	float WorldOrthoDiagThresholdDegrees = 40.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float WorldOrthoAngleComparisonEpsilonDegrees = 0.000001f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float WorldOrthoBlackNodeSnapTolerancePixels = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float WorldOrthoRedMacroCorridorPixels = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float WorldOrthoRedMacroGroupMinLengthPixels = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float WorldOrthoRedPrimitiveRdpTolerancePixels = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float WorldOrthoShortRedEdgeLengthPixels = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float WorldOrthoMinAreaRatio = 0.4f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|World Orthogonal", meta = (ClampMin = "0", UIMin = "0"))
+	int32 WorldOrthoPureRedMaxRootCandidates = 5;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Concurrency")
 	int32 CompositeMaxWorkers = 1;
 
