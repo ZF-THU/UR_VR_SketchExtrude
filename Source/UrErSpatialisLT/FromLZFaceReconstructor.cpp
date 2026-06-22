@@ -93,7 +93,6 @@ namespace
 	constexpr double WorldOrthoRedPrimitiveRdpTolerancePixels = 1.0;
 	constexpr double WorldOrthoShortRedEdgeLengthPixels = 20.0;
 	constexpr double WorldOrthoMinAreaRatio = 0.4;
-	constexpr double WorldOrthoMaxWrapGapFraction = 0.1;
 	constexpr int32 WorldOrthoPureRedMaxRootCandidates = 5;
 	constexpr double ExcavationCutterNormalScale = 1.2;
 	constexpr double ExcavationCutterCapScale = 1.1;
@@ -371,27 +370,6 @@ namespace
 		double CapMinimumBBoxRatio = 0.0;
 		bool bCapMinimumBBoxPassed = false;
 		bool bWorldOrthogonal = false;
-		bool bWorldOrthoUsePerFaceCapture = true;
-		double WorldOrthoPerFaceClipMarginPixels = 1.5;
-		bool bWorldOrthoPureRedAllowDiagonalRoot = false;
-		bool bWorldOrthoAllowDiagonalSupports = false;
-		double WorldOrthoBlackAxisToleranceDegreesUsed = WorldOrthoBlackAxisToleranceDegrees;
-		double WorldOrthoDiagThresholdDegreesUsed = WorldOrthoDiagThresholdDegrees;
-		double WorldOrthoAngleComparisonEpsilonDegreesUsed = WorldOrthoAngleComparisonEpsilonDegrees;
-		double WorldOrthoBlackNodeSnapTolerancePixelsUsed = WorldOrthoBlackNodeSnapTolerancePixels;
-		double WorldOrthoRedMacroCorridorPixelsUsed = WorldOrthoRedMacroCorridorPixels;
-		double WorldOrthoRedMacroGroupMinLengthPixelsUsed = WorldOrthoRedMacroGroupMinLengthPixels;
-		double WorldOrthoRedPrimitiveRdpTolerancePixelsUsed = WorldOrthoRedPrimitiveRdpTolerancePixels;
-		double WorldOrthoShortRedEdgeLengthPixelsUsed = WorldOrthoShortRedEdgeLengthPixels;
-		double WorldOrthoMinAreaRatioUsed = WorldOrthoMinAreaRatio;
-		double WorldOrthoMaxWrapGapFractionUsed = WorldOrthoMaxWrapGapFraction;
-		bool bWorldOrthoAllowTopologyRepair = false;
-		bool bTopologyRepairAttempted = false;
-		bool bTopologyRepairApplied = false;
-		int32 TopologyRepairInsertedCount = 0;
-		double TopologyRepairMaxGapPixels = 0.0;
-		FString TopologyRepairInsertedAxisTypeNames;
-		int32 WorldOrthoPureRedMaxRootCandidatesUsed = WorldOrthoPureRedMaxRootCandidates;
 		bool bContainsBlack = false;
 		int32 BoundaryRunCount = 0;
 		int32 PrimitiveGeometryEdgeCount = 0;
@@ -4491,7 +4469,6 @@ namespace
 		TEXT("primitive_edge_classification"),
 		TEXT("pure_red_root_alignment"),
 		TEXT("same_axis_merge"),
-		TEXT("topology_repair"),
 		TEXT("adjacency_validation"),
 		TEXT("support_line_solve"),
 		TEXT("vertex_intersections"),
@@ -4554,57 +4531,6 @@ namespace
 		}
 	}
 
-	static void ApplyWorldOrthogonalParamsToDebug(
-		FCapBBoxRegularizationResult& Debug,
-		const FFromLZFaceReconstructionParams& Params)
-	{
-		Debug.bWorldOrthoUsePerFaceCapture = Params.bWorldOrthoUsePerFaceCapture;
-		Debug.WorldOrthoPerFaceClipMarginPixels = FMath::Max(
-			0.0,
-			double(Params.WorldOrthoPerFaceClipMarginPixels));
-		Debug.bWorldOrthoPureRedAllowDiagonalRoot =
-			Params.bWorldOrthoPureRedAllowDiagonalRoot;
-		Debug.bWorldOrthoAllowDiagonalSupports =
-			Params.bWorldOrthoAllowDiagonalSupports;
-		Debug.WorldOrthoBlackAxisToleranceDegreesUsed = FMath::Clamp(
-			double(Params.WorldOrthoBlackAxisToleranceDegrees),
-			0.0,
-			180.0);
-		Debug.WorldOrthoDiagThresholdDegreesUsed = FMath::Clamp(
-			double(Params.WorldOrthoDiagThresholdDegrees),
-			0.0,
-			90.0);
-		Debug.WorldOrthoAngleComparisonEpsilonDegreesUsed = FMath::Max(
-			0.0,
-			double(Params.WorldOrthoAngleComparisonEpsilonDegrees));
-		Debug.WorldOrthoBlackNodeSnapTolerancePixelsUsed = FMath::Max(
-			0.0,
-			double(Params.WorldOrthoBlackNodeSnapTolerancePixels));
-		Debug.WorldOrthoRedMacroCorridorPixelsUsed = FMath::Max(
-			0.0,
-			double(Params.WorldOrthoRedMacroCorridorPixels));
-		Debug.WorldOrthoRedMacroGroupMinLengthPixelsUsed = FMath::Max(
-			0.0,
-			double(Params.WorldOrthoRedMacroGroupMinLengthPixels));
-		Debug.WorldOrthoRedPrimitiveRdpTolerancePixelsUsed = FMath::Max(
-			0.0,
-			double(Params.WorldOrthoRedPrimitiveRdpTolerancePixels));
-		Debug.WorldOrthoShortRedEdgeLengthPixelsUsed = FMath::Max(
-			0.0,
-			double(Params.WorldOrthoShortRedEdgeLengthPixels));
-		Debug.WorldOrthoMinAreaRatioUsed = FMath::Max(
-			0.0,
-			double(Params.WorldOrthoMinAreaRatio));
-		Debug.WorldOrthoMaxWrapGapFractionUsed = FMath::Clamp(
-			double(Params.WorldOrthoMaxWrapGapFraction),
-			0.0,
-			1.0);
-		Debug.bWorldOrthoAllowTopologyRepair =
-			Params.bWorldOrthoAllowTopologyRepair;
-		Debug.WorldOrthoPureRedMaxRootCandidatesUsed =
-			FMath::Max(0, Params.WorldOrthoPureRedMaxRootCandidates);
-	}
-
 	// Octilinear axis types: 0=U(horizontal), 1=V(vertical), 2=Diag+(45deg), 3=Diag-(135deg)
 	enum EOctilinearAxis : int32
 	{
@@ -4618,17 +4544,12 @@ namespace
 		double AngleToU,
 		double AngleToV,
 		double AngleToDiagPlus,
-		double AngleToDiagMinus,
-		const FFromLZFaceReconstructionParams& Params)
+		double AngleToDiagMinus)
 	{
-		if (!Params.bWorldOrthoAllowDiagonalSupports)
-		{
-			return AngleToU <= AngleToV ? Octi_U : Octi_V;
-		}
 		const double MinAxisAngle = FMath::Min(AngleToU, AngleToV);
 		if (MinAxisAngle <=
-			FMath::Clamp(double(Params.WorldOrthoDiagThresholdDegrees), 0.0, 90.0) +
-				FMath::Max(0.0, double(Params.WorldOrthoAngleComparisonEpsilonDegrees)))
+			WorldOrthoDiagThresholdDegrees +
+				WorldOrthoAngleComparisonEpsilonDegrees)
 		{
 			return AngleToU <= AngleToV ? Octi_U : Octi_V;
 		}
@@ -4935,21 +4856,12 @@ namespace
 	static FString OctilinearAxisName(EOctilinearAxis Axis);
 
 	static EOctilinearAxis ClassifyRedMacroOctilinearAxis(
-		const FVector2D& Direction,
-		const FFromLZFaceReconstructionParams& Params)
+		const FVector2D& Direction)
 	{
 		const FVector2D Unit = Direction.GetSafeNormal();
 		if (Unit.IsNearlyZero())
 		{
 			return Octi_U;
-		}
-		if (!Params.bWorldOrthoAllowDiagonalSupports)
-		{
-			const double AngleU = FMath::RadiansToDegrees(FMath::Acos(
-				FMath::Clamp(FMath::Abs(Unit.X), 0.0, 1.0)));
-			const double AngleV = FMath::RadiansToDegrees(FMath::Acos(
-				FMath::Clamp(FMath::Abs(Unit.Y), 0.0, 1.0)));
-			return AngleU <= AngleV ? Octi_U : Octi_V;
 		}
 		const FVector2D DiagPlus =
 			FVector2D(1.0, 1.0).GetSafeNormal();
@@ -4973,16 +4885,14 @@ namespace
 			AngleU,
 			AngleV,
 			AngleDiagPlus,
-			AngleDiagMinus,
-			Params);
+			AngleDiagMinus);
 	}
 
 	static void FindProtectedRedRunIndices(
 		const TArray<FVector2D>& PointsUV,
 		const TArray<FVector2D>& PointsCapSpace,
 		TArray<int32>& OutIndices,
-		FWorldOrthogonalRunDebug& OutDebug,
-		const FFromLZFaceReconstructionParams& Params)
+		FWorldOrthogonalRunDebug& OutDebug)
 	{
 		OutIndices.Reset();
 		OutDebug.RedProtectionMode.Reset();
@@ -5011,7 +4921,7 @@ namespace
 		}
 		if (FVector2D::Distance(ChordStart, ChordEnd) > 1e-6 &&
 			OutDebug.RedMaxChordDeviationPixels <=
-				FMath::Max(0.0, double(Params.WorldOrthoRedMacroCorridorPixels)))
+				WorldOrthoRedMacroCorridorPixels)
 		{
 			OutIndices = { 0, LastIndex };
 			OutDebug.RedProtectionMode = TEXT("straight_corridor_macro_edge");
@@ -5019,7 +4929,7 @@ namespace
 			double PathLengthUV = 0.0;
 			const EOctilinearAxis AxisType =
 				ComputePrincipalDirection2D(PointsUV, DirectionUV, PathLengthUV)
-					? ClassifyRedMacroOctilinearAxis(DirectionUV, Params)
+					? ClassifyRedMacroOctilinearAxis(DirectionUV)
 					: Octi_U;
 			double LengthPixels = 0.0;
 			for (int32 Index = 1; Index < PointsCapSpace.Num(); ++Index)
@@ -5042,9 +4952,8 @@ namespace
 			PointsCapSpace,
 			0,
 			LastIndex,
-			FMath::Square(FMath::Max(
-				0.0,
-				double(Params.WorldOrthoRedPrimitiveRdpTolerancePixels))),
+			WorldOrthoRedPrimitiveRdpTolerancePixels *
+				WorldOrthoRedPrimitiveRdpTolerancePixels,
 			Keep);
 		TArray<int32> SimplifiedIndices;
 		for (int32 Index = 0; Index < PointsCapSpace.Num(); ++Index)
@@ -5105,7 +5014,7 @@ namespace
 			FRedDirectionalGroup Group;
 			Group.StartIndex = StartIndex;
 			Group.EndIndex = EndIndex;
-			Group.AxisType = ClassifyRedMacroOctilinearAxis(DirectionUV, Params);
+			Group.AxisType = ClassifyRedMacroOctilinearAxis(DirectionUV);
 			Group.LengthPixels =
 				PrefixLengthPixels[EndIndex] -
 				PrefixLengthPixels[StartIndex];
@@ -5143,9 +5052,9 @@ namespace
 			const FRedDirectionalGroup& Incoming = Groups[GroupIndex];
 			const FRedDirectionalGroup& Outgoing = Groups[GroupIndex + 1];
 			if (Incoming.LengthPixels >=
-					FMath::Max(0.0, double(Params.WorldOrthoRedMacroGroupMinLengthPixels)) &&
+					WorldOrthoRedMacroGroupMinLengthPixels &&
 				Outgoing.LengthPixels >=
-					FMath::Max(0.0, double(Params.WorldOrthoRedMacroGroupMinLengthPixels)))
+					WorldOrthoRedMacroGroupMinLengthPixels)
 			{
 				OutIndices.Add(Incoming.EndIndex);
 			}
@@ -5176,15 +5085,13 @@ namespace
 	}
 
 	static EOctilinearAxis ClassifyEdgeAxisType(
-		const FWorldOrthogonalEdge& Edge,
-		const FFromLZFaceReconstructionParams& Params)
+		const FWorldOrthogonalEdge& Edge)
 	{
 		return ClassifyOctilinearAxisByThreshold(
 			Edge.AngleToU,
 			Edge.AngleToV,
 			Edge.AngleToDiagPlus,
-			Edge.AngleToDiagMinus,
-			Params);
+			Edge.AngleToDiagMinus);
 	}
 
 	static FString OctilinearAxisName(EOctilinearAxis Axis)
@@ -5270,15 +5177,12 @@ namespace
 		}
 	}
 
-	static bool InitializeWorldOrthogonalEdge(
-		FWorldOrthogonalEdge& Edge,
-		const FFromLZFaceReconstructionParams& Params);
+	static bool InitializeWorldOrthogonalEdge(FWorldOrthogonalEdge& Edge);
 
 	static bool RotateAndReclassifyPureRedEdge(
 		FWorldOrthogonalEdge& Edge,
 		const FVector2D& Center,
-		double RotationDegrees,
-		const FFromLZFaceReconstructionParams& Params)
+		double RotationDegrees)
 	{
 		RotatePointsAround2D(Edge.SamplesUV, Center, RotationDegrees);
 		Edge.StartUV = RotatePointAround2D(
@@ -5290,7 +5194,7 @@ namespace
 			Center,
 			RotationDegrees);
 		RotatePointsAround2D(Edge.GraphNodeUV, Center, RotationDegrees);
-		if (!InitializeWorldOrthogonalEdge(Edge, Params))
+		if (!InitializeWorldOrthogonalEdge(Edge))
 		{
 			return false;
 		}
@@ -5339,9 +5243,7 @@ namespace
 		}
 	}
 
-	static bool InitializeWorldOrthogonalEdge(
-		FWorldOrthogonalEdge& Edge,
-		const FFromLZFaceReconstructionParams& Params)
+	static bool InitializeWorldOrthogonalEdge(FWorldOrthogonalEdge& Edge)
 	{
 		if (Edge.SamplesUV.Num() < 2)
 		{
@@ -5371,7 +5273,7 @@ namespace
 		Edge.AngleToV = DirectionAngleToWorldUVAxis(Edge.DirectionUV, 1);
 		Edge.AngleToDiagPlus = DirectionAngleToOctilinearAxis(Edge.DirectionUV, Octi_DiagPlus);
 		Edge.AngleToDiagMinus = DirectionAngleToOctilinearAxis(Edge.DirectionUV, Octi_DiagMinus);
-		Edge.AxisType = ClassifyEdgeAxisType(Edge, Params);
+		Edge.AxisType = ClassifyEdgeAxisType(Edge);
 		Edge.AngleToAssignedAxis = DirectionAngleToOctilinearAxis(Edge.DirectionUV, Edge.AxisType);
 		return true;
 	}
@@ -5394,8 +5296,7 @@ namespace
 	static bool MergeOrderedWorldOrthogonalEdges(
 		const FWorldOrthogonalEdge& A,
 		const FWorldOrthogonalEdge& B,
-		FWorldOrthogonalEdge& Out,
-		const FFromLZFaceReconstructionParams& Params)
+		FWorldOrthogonalEdge& Out)
 	{
 		if (A.Type != B.Type)
 		{
@@ -5428,12 +5329,11 @@ namespace
 		Out.SnappedGraphNodeUV.Reset();
 		Out.GraphNodeSnapDistancesPixels.Reset();
 		Out.bUseMajorChordDirection = true;
-		return InitializeWorldOrthogonalEdge(Out, Params);
+		return InitializeWorldOrthogonalEdge(Out);
 	}
 
 	static int32 CollapseShortRedPrimitiveEdges(
-		TArray<FWorldOrthogonalEdge>& Edges,
-		const FFromLZFaceReconstructionParams& Params)
+		TArray<FWorldOrthogonalEdge>& Edges)
 	{
 		int32 CollapseCount = 0;
 		bool bChanged = true;
@@ -5447,7 +5347,7 @@ namespace
 				const FWorldOrthogonalEdge& Edge = Edges[EdgeIndex];
 				if (Edge.Type == ECapBoundaryRunType::Red &&
 					Edge.CapPathLengthPixels <
-						FMath::Max(0.0, double(Params.WorldOrthoShortRedEdgeLengthPixels)) &&
+						WorldOrthoShortRedEdgeLengthPixels &&
 					Edge.CapPathLengthPixels < ShortestLength)
 				{
 					const FWorldOrthogonalEdge& Previous =
@@ -5498,8 +5398,7 @@ namespace
 				if (!MergeOrderedWorldOrthogonalEdges(
 					Previous,
 					Short,
-					Merged,
-					Params))
+					Merged))
 				{
 					break;
 				}
@@ -5519,8 +5418,7 @@ namespace
 				if (!MergeOrderedWorldOrthogonalEdges(
 					Short,
 					Next,
-					Merged,
-					Params))
+					Merged))
 				{
 					break;
 				}
@@ -5588,175 +5486,9 @@ namespace
 		const TArray<FVector2D>& Points,
 		EOctilinearAxis Axis);
 
-	struct FAdjacencyViolation
-	{
-		int32 EdgeIndex = INDEX_NONE;
-		int32 NextIndex = INDEX_NONE;
-	};
-
-	static bool TryTopologyRepair(
-		TArray<FWorldOrthogonalEdge>& Edges,
-		TFunctionRef<double(const FVector2D&, const FVector2D&)> DistancePixels,
-		const FFromLZFaceReconstructionParams& Params,
-		FCapBBoxRegularizationResult& OutDebug,
-		double CapDiagonal)
-	{
-		OutDebug.bTopologyRepairAttempted = false;
-		OutDebug.bTopologyRepairApplied = false;
-		OutDebug.TopologyRepairInsertedCount = 0;
-		OutDebug.TopologyRepairMaxGapPixels = 0.0;
-		OutDebug.TopologyRepairInsertedAxisTypeNames.Empty();
-
-		if (!Params.bWorldOrthoAllowTopologyRepair || Edges.Num() < 3)
-		{
-			return true;
-		}
-
-		// Scan all cyclic pairs for same-axis violations
-		TArray<FAdjacencyViolation> Violations;
-		for (int32 i = 0; i < Edges.Num(); ++i)
-		{
-			const int32 Next = (i + 1) % Edges.Num();
-			if (Edges[i].AxisType == Edges[Next].AxisType)
-			{
-				Violations.Add({ i, Next });
-			}
-		}
-
-		if (Violations.Num() == 0)
-		{
-			return true;  // no violations, pass
-		}
-
-		OutDebug.bTopologyRepairAttempted = true;
-
-		if (Violations.Num() > 2)
-		{
-			SetRegularizationFallback(
-				OutDebug,
-				FString::Printf(
-					TEXT("%d same-axis violations detected; topology-repair supports at most 2"),
-					Violations.Num()));
-			return false;
-		}
-
-		const double GapThreshold = FMath::Max(0.0, double(Params.WorldOrthoMaxWrapGapFraction)) * CapDiagonal;
-
-		// Sort violations in reverse index order so insertions don't shift later indices
-		Violations.Sort([](const FAdjacencyViolation& A, const FAdjacencyViolation& B)
-		{
-			return A.EdgeIndex > B.EdgeIndex;
-		});
-
-		int32 InsertedCount = 0;
-		double MaxGapPixels = 0.0;
-		FString InsertedAxes;
-
-		for (const FAdjacencyViolation& V : Violations)
-		{
-			const FWorldOrthogonalEdge& EdgeA = Edges[V.EdgeIndex];
-			const FWorldOrthogonalEdge& EdgeB = Edges[V.NextIndex];
-
-			// Guard: at least one edge must be red
-			if (EdgeA.Type != ECapBoundaryRunType::Red &&
-				EdgeB.Type != ECapBoundaryRunType::Red)
-			{
-				SetRegularizationFallback(
-					OutDebug,
-					FString::Printf(
-						TEXT("violation at pair (%d,%d): both edges are black; topology-repair requires at least one red edge"),
-						V.EdgeIndex, V.NextIndex));
-				return false;
-			}
-
-			// Guard: restricted to U/V pairs only
-			if (EdgeA.AxisType != Octi_U && EdgeA.AxisType != Octi_V)
-			{
-				SetRegularizationFallback(
-					OutDebug,
-					FString::Printf(
-						TEXT("violation at pair (%d,%d) involves diagonal axis (%s); topology-repair restricted to U/V pairs only"),
-						V.EdgeIndex, V.NextIndex, *OctilinearAxisName(EdgeA.AxisType)));
-				return false;
-			}
-
-			// Compute gap
-			const double GapPixels = DistancePixels(EdgeA.EndUV, EdgeB.StartUV);
-			if (GapPixels > GapThreshold)
-			{
-				SetRegularizationFallback(
-					OutDebug,
-					FString::Printf(
-						TEXT("violation at pair (%d,%d): gap %.1fpx exceeds threshold %.1fpx (%.1f%% of cap diagonal %.1fpx); repair skipped"),
-						V.EdgeIndex, V.NextIndex, GapPixels, GapThreshold,
-						(CapDiagonal > 1e-6) ? (100.0 * GapThreshold / CapDiagonal) : 0.0, CapDiagonal));
-				return false;
-			}
-
-			// Determine complementary axis
-			const EOctilinearAxis NewAxis = (EdgeA.AxisType == Octi_U) ? Octi_V : Octi_U;
-
-			// Compute support coordinate from midpoint
-			const FVector2D MidpointUV = 0.5 * (EdgeA.EndUV + EdgeB.StartUV);
-			const double NewSupport = (NewAxis == Octi_V) ? MidpointUV.X : MidpointUV.Y;
-
-			// Direction and angles
-			const FVector2D DirectionUV = EdgeB.StartUV - EdgeA.EndUV;
-			const double AngleToU = DirectionAngleToWorldUVAxis(DirectionUV, 0);
-			const double AngleToV = DirectionAngleToWorldUVAxis(DirectionUV, 1);
-			const double AngleToAssigned = (NewAxis == Octi_U) ? AngleToU : AngleToV;
-
-			// Construct synthetic edge
-			FWorldOrthogonalEdge Synthetic;
-			Synthetic.Type = ECapBoundaryRunType::Red;
-			Synthetic.AxisType = NewAxis;
-			Synthetic.SupportCoordinate = NewSupport;
-			Synthetic.SamplesUV = { EdgeA.EndUV, EdgeB.StartUV };
-			Synthetic.SamplesCapSpace = { EdgeA.EndCapSpace, EdgeB.StartCapSpace };
-			Synthetic.StartUV = EdgeA.EndUV;
-			Synthetic.EndUV = EdgeB.StartUV;
-			Synthetic.StartCapSpace = EdgeA.EndCapSpace;
-			Synthetic.EndCapSpace = EdgeB.StartCapSpace;
-			Synthetic.DirectionUV = DirectionUV;
-			// PathLength is in UV-space units; CapPathLengthPixels is direct cap-space pixels.
-			Synthetic.PathLength = FVector2D::Distance(EdgeA.EndUV, EdgeB.StartUV);
-			Synthetic.CapPathLengthPixels = FVector2D::Distance(EdgeA.EndCapSpace, EdgeB.StartCapSpace);
-			Synthetic.AngleToU = AngleToU;
-			Synthetic.AngleToV = AngleToV;
-			Synthetic.AngleToAssignedAxis = AngleToAssigned;
-
-			Edges.Insert(Synthetic, V.EdgeIndex + 1);
-			++InsertedCount;
-			MaxGapPixels = FMath::Max(MaxGapPixels, GapPixels);
-			if (!InsertedAxes.IsEmpty()) InsertedAxes += TEXT(",");
-			InsertedAxes += OctilinearAxisName(NewAxis);
-		}
-
-		// Post-insertion validation: re-check all pairs
-		for (int32 i = 0; i < Edges.Num(); ++i)
-		{
-			const int32 Next = (i + 1) % Edges.Num();
-			if (Edges[i].AxisType == Edges[Next].AxisType)
-			{
-				SetRegularizationFallback(
-					OutDebug,
-					TEXT("synthetic topology-repair edges did not resolve all adjacency violations"));
-				return false;
-			}
-		}
-
-		// Success
-		OutDebug.bTopologyRepairApplied = true;
-		OutDebug.TopologyRepairInsertedCount = InsertedCount;
-		OutDebug.TopologyRepairMaxGapPixels = MaxGapPixels;
-		OutDebug.TopologyRepairInsertedAxisTypeNames = InsertedAxes;
-		return true;
-	}
-
 	static bool MergeAdjacentWorldOrthogonalEdges(
 		TArray<FWorldOrthogonalEdge>& Edges,
-		TFunctionRef<double(const FVector2D&, const FVector2D&)> DistancePixels,
-		const FFromLZFaceReconstructionParams& Params)
+		TFunctionRef<double(const FVector2D&, const FVector2D&)> DistancePixels)
 	{
 		auto AppendGraphNodes = [](
 			const FWorldOrthogonalEdge& Source,
@@ -5824,7 +5556,7 @@ namespace
 						A.AxisType,
 						CombinedSupport);
 					if (DistancePixels(NodeUV, Snapped) >
-						FMath::Max(0.0, double(Params.WorldOrthoBlackNodeSnapTolerancePixels)))
+						WorldOrthoBlackNodeSnapTolerancePixels)
 					{
 						return false;
 					}
@@ -5867,7 +5599,7 @@ namespace
 				A.bUseMajorChordDirection ||
 				B.bUseMajorChordDirection;
 			const EOctilinearAxis MergedAxisType = A.AxisType;
-			if (!InitializeWorldOrthogonalEdge(Out, Params))
+			if (!InitializeWorldOrthogonalEdge(Out))
 			{
 				return false;
 			}
@@ -6372,8 +6104,7 @@ namespace
 		const TArray<FVector2D>& OriginalCapUV,
 		const TArray<FVector2D>& BoundarySamplesUV,
 		const FVector2D& RotationCenterUV,
-		double RotationDegrees,
-		const FFromLZFaceReconstructionParams& Params)
+		double RotationDegrees)
 	{
 		FPureRedRootHypothesisSolve Result;
 		Result.Edges = PrimitiveEdges;
@@ -6383,8 +6114,7 @@ namespace
 				!RotateAndReclassifyPureRedEdge(
 					Edge,
 					RotationCenterUV,
-					RotationDegrees,
-					Params))
+					RotationDegrees))
 			{
 				Result.RejectionReason =
 					TEXT("failed to rotate and classify a pure-red primitive edge");
@@ -6400,8 +6130,7 @@ namespace
 		};
 		if (!MergeAdjacentWorldOrthogonalEdges(
 			Result.Edges,
-			UnusedDistancePixels,
-			Params))
+			UnusedDistancePixels))
 		{
 			Result.RejectionReason =
 				TEXT("failed to merge same-axis pure-red support edges");
@@ -6595,7 +6324,6 @@ namespace
 	static bool RegularizeCapToWorldOrthogonalPolygon(
 		const FFaceInfo& Face,
 		const FCommonInputs& Inputs,
-		const FFromLZFaceReconstructionParams& Params,
 		const FVector2D& OriginalDeltaPixels,
 		const TArray<FVector>& OriginalCapWorld,
 		const TArray<FCapBoundaryRunInput>& BoundaryRuns,
@@ -6611,7 +6339,6 @@ namespace
 		OutDebug = FCapBBoxRegularizationResult();
 		OutDebug.bAttempted = true;
 		OutDebug.bWorldOrthogonal = true;
-		ApplyWorldOrthogonalParamsToDebug(OutDebug, Params);
 		InitializeWorldOrthogonalStages(OutDebug);
 		BeginWorldOrthogonalStage(OutDebug, TEXT("input_validation"));
 		OutDebug.FaceOriginWorld = Face.PlanePoint;
@@ -6669,7 +6396,7 @@ namespace
 				OutDebug.FaceAxisVWorld));
 		}
 		OutDebug.FaceBoundarySource = OverrideFaceBoundarySource ? OverrideFaceBoundarySource : TEXT("shared_camera_legacy");
-		if (!OverrideFaceBoundarySource && Params.bWorldOrthoUsePerFaceCapture)
+		if (!OverrideFaceBoundarySource && GFromLZUsePerFaceCapture != 0)
 		{
 			TArray<FVector2D> CleanBoundaryUV;
 			if (BuildPerFaceCleanBoundaryUV(
@@ -6680,7 +6407,7 @@ namespace
 				OutDebug.FaceAxisVWorld,
 				Inputs.FacesWidth,
 				Inputs.FacesHeight,
-				FMath::Max(0.0, double(Params.WorldOrthoPerFaceClipMarginPixels)),
+				GFromLZPerFaceClipMarginPixels,
 				CleanBoundaryUV))
 			{
 				OutDebug.FaceBoundaryUV = MoveTemp(CleanBoundaryUV);
@@ -6868,7 +6595,7 @@ namespace
 				Edge.EndUV = RunEndUV;
 				Edge.StartCapSpace = Run.StartNodePosition;
 				Edge.EndCapSpace = Run.EndNodePosition;
-				if (!InitializeWorldOrthogonalEdge(Edge, Params))
+				if (!InitializeWorldOrthogonalEdge(Edge))
 				{
 					SetRegularizationFallback(OutDebug, TEXT("a black boundary run has degenerate geometry"));
 					return false;
@@ -6883,8 +6610,7 @@ namespace
 				RunSamplesUV,
 				RunSamplesCapSpace,
 				ProtectedIndices,
-				StoredRunDebug,
-				Params);
+				StoredRunDebug);
 			if (ProtectedIndices.Num() < 2)
 			{
 				SetRegularizationFallback(OutDebug, TEXT("a red boundary run has no usable protected path"));
@@ -6931,7 +6657,7 @@ namespace
 					SegmentIndex + 2 == ProtectedIndices.Num()
 						? Run.EndNodePosition
 						: RunSamplesCapSpace[EndIndex];
-				if (!InitializeWorldOrthogonalEdge(Edge, Params))
+				if (!InitializeWorldOrthogonalEdge(Edge))
 				{
 					SetRegularizationFallback(OutDebug, TEXT("a protected red boundary segment has degenerate geometry"));
 					return false;
@@ -6949,7 +6675,7 @@ namespace
 				OutDebug.IgnoredConnectorCount));
 		PassWorldOrthogonalStage(OutDebug, TEXT("red_corner_protection"));
 		const int32 CollapsedShortEdgeCount =
-			CollapseShortRedPrimitiveEdges(Edges, Params);
+			CollapseShortRedPrimitiveEdges(Edges);
 		OutDebug.PrimitiveGeometryEdgeCount = Edges.Num();
 		BeginWorldOrthogonalStage(
 			OutDebug,
@@ -7015,21 +6741,18 @@ namespace
 							ChordEnd)));
 				}
 				if (LengthPixels <
-						FMath::Max(0.0, double(Params.WorldOrthoRedMacroGroupMinLengthPixels)) ||
+						WorldOrthoRedMacroGroupMinLengthPixels ||
 					MaxChordDeviationPixels >
-						FMath::Max(0.0, double(Params.WorldOrthoRedMacroCorridorPixels)))
+						WorldOrthoRedMacroCorridorPixels)
 				{
 					continue;
 				}
 
 				// Skip diagonal targets (45deg / 135deg) for pure-red roots unless
-				// explicitly re-enabled by Step10 params. Without this gate a dominant
+				// explicitly re-enabled via CVar. Without this gate a dominant
 				// near-diagonal red stroke would snap the entire cap onto a 45deg /
 				// 135deg frame, which is rarely the user's intent.
-				const bool bDiagonalAllowedForRoot =
-					Params.bWorldOrthoAllowDiagonalSupports &&
-					Params.bWorldOrthoPureRedAllowDiagonalRoot;
-				if (!bDiagonalAllowedForRoot &&
+				if (GFromLZPureRedAllowDiagonalRoot == 0 &&
 					(Edge.AxisType == Octi_DiagPlus ||
 					 Edge.AxisType == Octi_DiagMinus))
 				{
@@ -7056,10 +6779,10 @@ namespace
 				return A.Reliability > B.Reliability;
 			});
 			if (RootCandidates.Num() >
-				FMath::Max(0, Params.WorldOrthoPureRedMaxRootCandidates))
+				WorldOrthoPureRedMaxRootCandidates)
 			{
 				RootCandidates.SetNum(
-					FMath::Max(0, Params.WorldOrthoPureRedMaxRootCandidates));
+					WorldOrthoPureRedMaxRootCandidates);
 			}
 
 			TArray<FRootCandidate> Hypotheses;
@@ -7152,8 +6875,7 @@ namespace
 						OutDebug.OriginalCapUV,
 						BoundarySamplesUV,
 						OutDebug.RootRotationCenterUV,
-						Hypothesis.RotationDegrees,
-						Params);
+						Hypothesis.RotationDegrees);
 
 				FWorldOrthogonalRootHypothesisDebug HypothesisDebug;
 				HypothesisDebug.HypothesisIndex = HypothesisIndex;
@@ -7274,8 +6996,7 @@ namespace
 				if (!RotateAndReclassifyPureRedEdge(
 					Edge,
 					OutDebug.RootRotationCenterUV,
-					Selected.RotationDegrees,
-					Params))
+					Selected.RotationDegrees))
 				{
 					SetRegularizationFallback(
 						OutDebug,
@@ -7332,7 +7053,7 @@ namespace
 			if (Edge.Type == ECapBoundaryRunType::Black)
 			{
 				if (Edge.AngleToAssignedAxis >
-					FMath::Clamp(double(Params.WorldOrthoBlackAxisToleranceDegrees), 0.0, 180.0))
+					WorldOrthoBlackAxisToleranceDegrees)
 				{
 					SetRegularizationFallback(
 						OutDebug,
@@ -7340,26 +7061,20 @@ namespace
 							TEXT("black edge %d assigned to %s by the %.3f-degree diagonal threshold requires %.3f degrees of snap, exceeding %.3f"),
 							EdgeIndex,
 							*OctilinearAxisName(Edge.AxisType),
-							FMath::Clamp(double(Params.WorldOrthoDiagThresholdDegrees), 0.0, 90.0),
+							WorldOrthoDiagThresholdDegrees,
 							Edge.AngleToAssignedAxis,
-							FMath::Clamp(double(Params.WorldOrthoBlackAxisToleranceDegrees), 0.0, 180.0)));
+							WorldOrthoBlackAxisToleranceDegrees));
 					return false;
 				}
 			}
 		}
 
-		const FString DiagNote = Params.bWorldOrthoAllowDiagonalSupports
-			? TEXT("")
-			: TEXT("; allow_diagonal_supports=false");
-
 		BeginWorldOrthogonalStage(OutDebug, TEXT("same_axis_merge"));
-		if (!MergeAdjacentWorldOrthogonalEdges(Edges, FaceUVDistancePixels, Params))
+		if (!MergeAdjacentWorldOrthogonalEdges(Edges, FaceUVDistancePixels))
 		{
 			SetRegularizationFallback(
 				OutDebug,
-				FString::Printf(
-					TEXT("failed to merge adjacent geometric support fragments with the same octilinear axis assignment%s"),
-					*DiagNote));
+				TEXT("failed to merge adjacent geometric support fragments with the same octilinear axis assignment"));
 			return false;
 		}
 		OutDebug.GeometryEdgeCount = Edges.Num();
@@ -7374,40 +7089,7 @@ namespace
 				OutDebug.PrimitiveGeometryEdgeCount,
 				OutDebug.GeometryEdgeCount));
 
-		// Stage 7: topology_repair — insert synthetic edges to resolve same-axis
-		// adjacency violations in the cyclic edge list (up to 2 violations allowed).
-		BeginWorldOrthogonalStage(OutDebug, TEXT("topology_repair"));
-		if (!TryTopologyRepair(Edges, FaceUVDistancePixels, Params, OutDebug, OutDebug.WorldOrthogonalCapDiagonal))
-		{
-			return false;
-		}
-		if (OutDebug.bTopologyRepairApplied)
-		{
-			OutDebug.GeometryEdgeCount = Edges.Num();
-			CaptureWorldOrthogonalEdgeDebug(
-				Edges,
-				OutDebug.WorldOrthogonalMergedEdges);
-			PassWorldOrthogonalStage(
-				OutDebug,
-				TEXT("topology_repair"),
-				FString::Printf(
-					TEXT("%d synthetic edge(s) inserted; max gap %.1fpx (%.1f%% of cap diagonal %.1fpx)"),
-					OutDebug.TopologyRepairInsertedCount,
-					OutDebug.TopologyRepairMaxGapPixels,
-					(OutDebug.WorldOrthogonalCapDiagonal > 1e-6) ? (100.0 * OutDebug.TopologyRepairMaxGapPixels / OutDebug.WorldOrthogonalCapDiagonal) : 0.0,
-					OutDebug.WorldOrthogonalCapDiagonal));
-		}
-		else
-		{
-			PassWorldOrthogonalStage(
-				OutDebug,
-				TEXT("topology_repair"),
-				OutDebug.bTopologyRepairAttempted
-					? TEXT("topology repair attempted but no insertions were necessary")
-					: TEXT("no same-axis adjacency violations detected"));
-		}
-
-		// Stage 8: adjacency_validation — validate edge sequence can form an octilinear polygon
+		// Stage 6: adjacency_validation — validate edge sequence can form an octilinear polygon
 		BeginWorldOrthogonalStage(OutDebug, TEXT("adjacency_validation"));
 		if (Edges.Num() < 3)
 		{
@@ -7427,9 +7109,8 @@ namespace
 				SetRegularizationFallback(
 					OutDebug,
 					FString::Printf(
-						TEXT("adjacent support edges %d and %d share axis type %s; they do not define an octilinear corner%s"),
-						EdgeIndex, NextIndex, *OctilinearAxisName(Edges[EdgeIndex].AxisType),
-						*DiagNote));
+						TEXT("adjacent support edges %d and %d share axis type %s; they do not define an octilinear corner"),
+						EdgeIndex, NextIndex, *OctilinearAxisName(Edges[EdgeIndex].AxisType)));
 				return false;
 			}
 		}
@@ -7477,7 +7158,7 @@ namespace
 					Edge.SnappedGraphNodeUV.Add(SnappedNodeUV);
 					Edge.GraphNodeSnapDistancesPixels.Add(SnapDistancePixels);
 					if (!FMath::IsFinite(SnapDistancePixels) ||
-						SnapDistancePixels > FMath::Max(0.0, double(Params.WorldOrthoBlackNodeSnapTolerancePixels)))
+						SnapDistancePixels > WorldOrthoBlackNodeSnapTolerancePixels)
 					{
 						const int32 NodeId = Edge.GraphNodeIds.IsValidIndex(NodeIndex)
 							? Edge.GraphNodeIds[NodeIndex]
@@ -7489,7 +7170,7 @@ namespace
 								EdgeIndex,
 								NodeId,
 								SnapDistancePixels,
-								FMath::Max(0.0, double(Params.WorldOrthoBlackNodeSnapTolerancePixels))));
+								WorldOrthoBlackNodeSnapTolerancePixels));
 						return false;
 					}
 				}
@@ -7533,7 +7214,7 @@ namespace
 			OutDebug.bContainsBlack
 				? FString::Printf(
 					TEXT("black support lines fitted with graph-node snap tolerance %.3f px; remaining red supports solved"),
-					FMath::Max(0.0, double(Params.WorldOrthoBlackNodeSnapTolerancePixels)))
+					WorldOrthoBlackNodeSnapTolerancePixels)
 				: TEXT("pure-red supports solved by weighted median"));
 
 		// Stage 8: vertex_intersections — solve vertex positions from support intersections
@@ -7615,7 +7296,7 @@ namespace
 					Edge.SnappedGraphNodeUV.Add(SnappedNodeUV);
 					Edge.GraphNodeSnapDistancesPixels.Add(SnapDistancePixels);
 					if (!FMath::IsFinite(SnapDistancePixels) ||
-						SnapDistancePixels > FMath::Max(0.0, double(Params.WorldOrthoBlackNodeSnapTolerancePixels)))
+						SnapDistancePixels > WorldOrthoBlackNodeSnapTolerancePixels)
 					{
 						const int32 NodeId = Edge.GraphNodeIds.IsValidIndex(NodeIndex)
 							? Edge.GraphNodeIds[NodeIndex]
@@ -7626,7 +7307,7 @@ namespace
 								TEXT("octilinear solve moves black graph node %d by %.3f px, exceeding %.3f px"),
 								NodeId,
 								SnapDistancePixels,
-								FMath::Max(0.0, double(Params.WorldOrthoBlackNodeSnapTolerancePixels))));
+								WorldOrthoBlackNodeSnapTolerancePixels));
 						return false;
 					}
 				}
@@ -7656,14 +7337,14 @@ namespace
 		OutDebug.WorldOrthogonalAreaRatio =
 			FMath::Abs(CorrectedSignedArea) / FMath::Abs(OriginalSignedArea);
 		if (!FMath::IsFinite(OutDebug.WorldOrthogonalAreaRatio) ||
-			OutDebug.WorldOrthogonalAreaRatio < FMath::Max(0.0, double(Params.WorldOrthoMinAreaRatio)))
+			OutDebug.WorldOrthogonalAreaRatio < WorldOrthoMinAreaRatio)
 		{
 			SetRegularizationFallback(
 				OutDebug,
 				FString::Printf(
 					TEXT("orthogonal area ratio %.6f is below the minimum %.6f"),
 					OutDebug.WorldOrthogonalAreaRatio,
-					FMath::Max(0.0, double(Params.WorldOrthoMinAreaRatio))));
+					WorldOrthoMinAreaRatio));
 			return false;
 		}
 
@@ -8814,43 +8495,26 @@ namespace
 		Root->SetArrayField(
 			TEXT("selected_aligned_root_end_uv"),
 			JsonVector2D(Debug.SelectedAlignedRootEndUV)->AsArray());
-		Root->SetBoolField(TEXT("use_per_face_capture"), Debug.bWorldOrthoUsePerFaceCapture);
-		Root->SetNumberField(TEXT("per_face_clip_margin_pixels"), Debug.WorldOrthoPerFaceClipMarginPixels);
-		Root->SetBoolField(TEXT("pure_red_allow_diagonal_root"), Debug.bWorldOrthoPureRedAllowDiagonalRoot);
-		Root->SetBoolField(TEXT("allow_diagonal_supports"), Debug.bWorldOrthoAllowDiagonalSupports);
-		Root->SetNumberField(TEXT("black_axis_tolerance_degrees"), Debug.WorldOrthoBlackAxisToleranceDegreesUsed);
-		Root->SetNumberField(TEXT("diag_threshold_degrees"), Debug.WorldOrthoDiagThresholdDegreesUsed);
-		Root->SetNumberField(
-			TEXT("angle_comparison_epsilon_degrees"),
-			Debug.WorldOrthoAngleComparisonEpsilonDegreesUsed);
+		Root->SetNumberField(TEXT("black_axis_tolerance_degrees"), WorldOrthoBlackAxisToleranceDegrees);
+		Root->SetNumberField(TEXT("diag_threshold_degrees"), WorldOrthoDiagThresholdDegrees);
 		Root->SetNumberField(
 			TEXT("short_red_edge_length_pixels"),
-			Debug.WorldOrthoShortRedEdgeLengthPixelsUsed);
+			WorldOrthoShortRedEdgeLengthPixels);
 		Root->SetNumberField(
 			TEXT("minimum_area_ratio"),
-			Debug.WorldOrthoMinAreaRatioUsed);
-		Root->SetNumberField(TEXT("max_wrap_gap_fraction"), Debug.WorldOrthoMaxWrapGapFractionUsed);
-		Root->SetBoolField(TEXT("allow_topology_repair"), Debug.bWorldOrthoAllowTopologyRepair);
-		Root->SetBoolField(TEXT("topology_repair_attempted"), Debug.bTopologyRepairAttempted);
-		Root->SetBoolField(TEXT("topology_repair_applied"), Debug.bTopologyRepairApplied);
-		Root->SetNumberField(TEXT("topology_repair_inserted_count"), Debug.TopologyRepairInsertedCount);
-		Root->SetNumberField(TEXT("topology_repair_max_gap_pixels"), Debug.TopologyRepairMaxGapPixels);
-		Root->SetStringField(TEXT("topology_repair_inserted_axis_types"), Debug.TopologyRepairInsertedAxisTypeNames);
+			WorldOrthoMinAreaRatio);
 		Root->SetNumberField(
 			TEXT("black_graph_node_snap_tolerance_pixels"),
-			Debug.WorldOrthoBlackNodeSnapTolerancePixelsUsed);
+			WorldOrthoBlackNodeSnapTolerancePixels);
 		Root->SetNumberField(
 			TEXT("red_macro_corridor_pixels"),
-			Debug.WorldOrthoRedMacroCorridorPixelsUsed);
+			WorldOrthoRedMacroCorridorPixels);
 		Root->SetNumberField(
 			TEXT("red_macro_group_min_length_pixels"),
-			Debug.WorldOrthoRedMacroGroupMinLengthPixelsUsed);
+			WorldOrthoRedMacroGroupMinLengthPixels);
 		Root->SetNumberField(
 			TEXT("red_primitive_rdp_tolerance_pixels"),
-			Debug.WorldOrthoRedPrimitiveRdpTolerancePixelsUsed);
-		Root->SetNumberField(
-			TEXT("pure_red_max_root_candidates"),
-			Debug.WorldOrthoPureRedMaxRootCandidatesUsed);
+			WorldOrthoRedPrimitiveRdpTolerancePixels);
 		Root->SetArrayField(TEXT("original_source_to_copied_delta_pixels"), JsonVector2D(Debug.OriginalSourceToCopiedDeltaPixels)->AsArray());
 		Root->SetArrayField(TEXT("face_origin_world"), JsonVector(Debug.FaceOriginWorld)->AsArray());
 		Root->SetArrayField(TEXT("face_normal_world"), JsonVector(Debug.FaceNormalWorld)->AsArray());
@@ -10002,8 +9666,7 @@ namespace
 		const TArray<FCapBoundaryRunInput>& BoundaryRuns,
 		const FVector2D& SourceTranslationCapSpace,
 		const FFaceInfo& SelectedFace,
-		const FCommonInputs& Inputs,
-		const FFromLZFaceReconstructionParams& Params)
+		const FCommonInputs& Inputs)
 	{
 		FSolidReconstructionResult Result;
 		InitializeSolidResult(Result, ComponentName, PressDir, Inputs);
@@ -10077,7 +9740,6 @@ namespace
 		const bool bRegularizationApplied = RegularizeCapToWorldOrthogonalPolygon(
 			SelectedFace,
 			Inputs,
-			Params,
 			Result.SourceToCopiedVector2D,
 			OriginalSourceLoopWorld,
 			BoundaryRuns,
@@ -11015,7 +10677,6 @@ namespace
 			const bool bRegularizationApplied = RegularizeCapToWorldOrthogonalPolygon(
 				VirtualBaseFace,
 				Inputs,
-				Params,
 				CandidateSolid.SourceToCopiedVector2D,
 				CandidateSolid.SourceLoopWorld,
 				BoundaryRuns,
@@ -12720,8 +12381,7 @@ namespace
 			BoundaryRuns,
 			SourceRunTranslation,
 			SelectedFace,
-			Inputs,
-			Params);
+			Inputs);
 		if (!Result.Solid.bSuccess && TryAttachSupportPlaneFallbackAndSave(Result.Solid.Error))
 		{
 			return Result;
@@ -16216,23 +15876,7 @@ void FFromLZFaceReconstructor::ProcessPress(
 		ParamsJson += FString::Printf(TEXT("  \"attach_path_plane_relation_angle_tol_deg\": %.6f,\n"), Params.AttachPathPlaneRelationAngleTolDeg);
 		ParamsJson += FString::Printf(TEXT("  \"attach_path_plane_relation_distance_tol_cm\": %.6f,\n"), Params.AttachPathPlaneRelationDistanceTolCm);
 		ParamsJson += FString::Printf(TEXT("  \"support_force_hard_min_green_chord_cm\": %.6f,\n"), Params.SupportForceHardMinGreenChordCm);
-		ParamsJson += FString::Printf(TEXT("  \"support_force_preferred_min_green_chord_cm\": %.6f,\n"), Params.SupportForcePreferredMinGreenChordCm);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_use_per_face_capture\": %s,\n"), Params.bWorldOrthoUsePerFaceCapture ? TEXT("true") : TEXT("false"));
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_per_face_clip_margin_pixels\": %.6f,\n"), Params.WorldOrthoPerFaceClipMarginPixels);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_pure_red_allow_diagonal_root\": %s,\n"), Params.bWorldOrthoPureRedAllowDiagonalRoot ? TEXT("true") : TEXT("false"));
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_allow_diagonal_supports\": %s,\n"), Params.bWorldOrthoAllowDiagonalSupports ? TEXT("true") : TEXT("false"));
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_max_wrap_gap_fraction\": %.6f,\n"), Params.WorldOrthoMaxWrapGapFraction);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_allow_topology_repair\": %s,\n"), Params.bWorldOrthoAllowTopologyRepair ? TEXT("true") : TEXT("false"));
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_black_axis_tolerance_degrees\": %.6f,\n"), Params.WorldOrthoBlackAxisToleranceDegrees);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_diag_threshold_degrees\": %.6f,\n"), Params.WorldOrthoDiagThresholdDegrees);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_angle_comparison_epsilon_degrees\": %.9f,\n"), Params.WorldOrthoAngleComparisonEpsilonDegrees);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_black_node_snap_tolerance_pixels\": %.6f,\n"), Params.WorldOrthoBlackNodeSnapTolerancePixels);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_red_macro_corridor_pixels\": %.6f,\n"), Params.WorldOrthoRedMacroCorridorPixels);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_red_macro_group_min_length_pixels\": %.6f,\n"), Params.WorldOrthoRedMacroGroupMinLengthPixels);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_red_primitive_rdp_tolerance_pixels\": %.6f,\n"), Params.WorldOrthoRedPrimitiveRdpTolerancePixels);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_short_red_edge_length_pixels\": %.6f,\n"), Params.WorldOrthoShortRedEdgeLengthPixels);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_min_area_ratio\": %.6f,\n"), Params.WorldOrthoMinAreaRatio);
-		ParamsJson += FString::Printf(TEXT("  \"world_ortho_pure_red_max_root_candidates\": %d\n"), Params.WorldOrthoPureRedMaxRootCandidates);
+		ParamsJson += FString::Printf(TEXT("  \"support_force_preferred_min_green_chord_cm\": %.6f\n"), Params.SupportForcePreferredMinGreenChordCm);
 		ParamsJson += TEXT("}\n");
 		FFileHelper::SaveStringToFile(ParamsJson, *(PressDir / TEXT("10_face_reconstruction_params.json")));
 	}

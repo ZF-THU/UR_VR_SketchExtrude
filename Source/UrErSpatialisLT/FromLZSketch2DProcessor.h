@@ -57,23 +57,6 @@ struct FFromLZProcessParams
 	float SupportForceHardMinGreenChordCm = 1.0f;
 	float SupportForcePreferredMinGreenChordCm = 5.0f;
 
-	bool bWorldOrthoUsePerFaceCapture = true;
-	float WorldOrthoPerFaceClipMarginPixels = 1.5f;
-	bool bWorldOrthoPureRedAllowDiagonalRoot = false;
-	bool bWorldOrthoAllowDiagonalSupports = false;
-	float WorldOrthoBlackAxisToleranceDegrees = 5.0f;
-	float WorldOrthoDiagThresholdDegrees = 40.0f;
-	float WorldOrthoAngleComparisonEpsilonDegrees = 0.000001f;
-	float WorldOrthoBlackNodeSnapTolerancePixels = 10.0f;
-	float WorldOrthoRedMacroCorridorPixels = 5.0f;
-	float WorldOrthoRedMacroGroupMinLengthPixels = 20.0f;
-	float WorldOrthoRedPrimitiveRdpTolerancePixels = 1.0f;
-	float WorldOrthoShortRedEdgeLengthPixels = 20.0f;
-	float WorldOrthoMinAreaRatio = 0.4f;
-	float WorldOrthoMaxWrapGapFraction = 0.1f;
-	bool bWorldOrthoAllowTopologyRepair = true;
-	int32 WorldOrthoPureRedMaxRootCandidates = 5;
-
 	int32 CompositeMaxWorkers = 1;
 	int32 ParallelForMaxThreads = 8;
 
@@ -97,22 +80,6 @@ struct FFromLZProcessParams
 		Out.SupportForcePreferredMinGreenChordCm = FMath::Max(
 			Out.SupportForceHardMinGreenChordCm,
 			SupportForcePreferredMinGreenChordCm);
-		Out.bWorldOrthoUsePerFaceCapture = bWorldOrthoUsePerFaceCapture;
-		Out.WorldOrthoPerFaceClipMarginPixels = FMath::Max(0.0f, WorldOrthoPerFaceClipMarginPixels);
-		Out.bWorldOrthoPureRedAllowDiagonalRoot = bWorldOrthoPureRedAllowDiagonalRoot;
-		Out.bWorldOrthoAllowDiagonalSupports = bWorldOrthoAllowDiagonalSupports;
-		Out.WorldOrthoBlackAxisToleranceDegrees = FMath::Clamp(WorldOrthoBlackAxisToleranceDegrees, 0.0f, 180.0f);
-		Out.WorldOrthoDiagThresholdDegrees = FMath::Clamp(WorldOrthoDiagThresholdDegrees, 0.0f, 90.0f);
-		Out.WorldOrthoAngleComparisonEpsilonDegrees = FMath::Max(0.0f, WorldOrthoAngleComparisonEpsilonDegrees);
-		Out.WorldOrthoBlackNodeSnapTolerancePixels = FMath::Max(0.0f, WorldOrthoBlackNodeSnapTolerancePixels);
-		Out.WorldOrthoRedMacroCorridorPixels = FMath::Max(0.0f, WorldOrthoRedMacroCorridorPixels);
-		Out.WorldOrthoRedMacroGroupMinLengthPixels = FMath::Max(0.0f, WorldOrthoRedMacroGroupMinLengthPixels);
-		Out.WorldOrthoRedPrimitiveRdpTolerancePixels = FMath::Max(0.0f, WorldOrthoRedPrimitiveRdpTolerancePixels);
-		Out.WorldOrthoShortRedEdgeLengthPixels = FMath::Max(0.0f, WorldOrthoShortRedEdgeLengthPixels);
-		Out.WorldOrthoMinAreaRatio = FMath::Max(0.0f, WorldOrthoMinAreaRatio);
-		Out.WorldOrthoMaxWrapGapFraction = FMath::Clamp(WorldOrthoMaxWrapGapFraction, 0.0f, 1.0f);
-		Out.bWorldOrthoAllowTopologyRepair = bWorldOrthoAllowTopologyRepair;
-		Out.WorldOrthoPureRedMaxRootCandidates = FMath::Max(0, WorldOrthoPureRedMaxRootCandidates);
 		return Out;
 	}
 };

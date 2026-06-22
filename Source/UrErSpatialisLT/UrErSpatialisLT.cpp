@@ -1,7 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-#include "UrErSpatialisLT.h"
 #include "FromLZSessionReset.h"
+#include "UrErSpatialisLT.h"
 #include "Modules/ModuleManager.h"
 
 class FUrErSpatialisLTModule : public FDefaultGameModuleImpl

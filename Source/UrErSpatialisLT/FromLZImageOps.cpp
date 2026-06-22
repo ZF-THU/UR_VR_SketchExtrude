@@ -5347,284 +5347,6 @@ namespace FromLZImageOps
 		return FCString::Strcmp(*A.Key, *B.Key) < 0;
 	}
 
-	// Per-anchor tie-break used by `local_black` and `fallback_trace` passes.
-	// Ordering (lexicographic):
-	//   1. RealRedArcLength desc — favors candidates that explain the most genuine
-	//      red ink (excludes synthetic connectors; cycle edges are already 2-core
-	//      survivors by construction). Equality tolerance 1.0 px so sub-pixel noise
-	//      falls through to the LoopArea decision.
-	//   2. LoopArea asc — among red-equivalent candidates, prefer the smaller cap.
-	//   3. BlackTotalLength asc — less black perimeter consumed.
-	//   4. EdgeCount asc — fewer graph edges.
-	//   5. Key lex asc — deterministic floor.
-	static bool CandidateMinAreaLess(
-		const FLoopCandidate& A,
-		const FLoopCandidate& B,
-		const TArray<FColoredStroke>& Strokes)
-	{
-		const double ARealRedLength = CandidateRealRedArcLength(A, Strokes);
-		const double BRealRedLength = CandidateRealRedArcLength(B, Strokes);
-		if (!FMath::IsNearlyEqual(ARealRedLength, BRealRedLength, 1.0))
-		{
-			return ARealRedLength > BRealRedLength;
-		}
-		if (!FMath::IsNearlyEqual(A.LoopArea, B.LoopArea, 1e-6))
-		{
-			return A.LoopArea < B.LoopArea;
-		}
-		if (!FMath::IsNearlyEqual(A.BlackTotalLength, B.BlackTotalLength, 1e-6))
-		{
-			return A.BlackTotalLength < B.BlackTotalLength;
-		}
-		if (A.EdgeCount != B.EdgeCount)
-		{
-			return A.EdgeCount < B.EdgeCount;
-		}
-		return FCString::Strcmp(*A.Key, *B.Key) < 0;
-	}
-
-	static bool FindNearestLocalGreenForStroke(
-		const TArray<FColoredStroke>& Strokes,
-		int32 StrokeId,
-		const TArray<int32>& AllGreen,
-		double GreenSelectToleranceSquared,
-		int32* OutNearestGreenStrokeId = nullptr,
-		double* OutNearestDistanceSquared = nullptr)
-	{
-		if (OutNearestGreenStrokeId)
-		{
-			*OutNearestGreenStrokeId = INDEX_NONE;
-		}
-		if (OutNearestDistanceSquared)
-		{
-			*OutNearestDistanceSquared = TNumericLimits<double>::Max();
-		}
-		if (!Strokes.IsValidIndex(StrokeId))
-		{
-			return false;
-		}
-
-		const FStroke& StrokePoints = Strokes[StrokeId].Points;
-		if (StrokePoints.Num() == 0)
-		{
-			return false;
-		}
-
-		bool bFound = false;
-		double BestD2 = TNumericLimits<double>::Max();
-		int32 BestGreenStrokeId = INDEX_NONE;
-		for (int32 GreenStrokeId : AllGreen)
-		{
-			if (!Strokes.IsValidIndex(GreenStrokeId))
-			{
-				continue;
-			}
-			const FStroke& GreenPoints = Strokes[GreenStrokeId].Points;
-			if (GreenPoints.Num() == 0)
-			{
-				continue;
-			}
-
-			for (const FVector2D& StrokePoint : StrokePoints)
-			{
-				const double StartD2 = FVector2D::DistSquared(StrokePoint, GreenPoints[0]);
-				if (StartD2 < BestD2)
-				{
-					BestD2 = StartD2;
-					BestGreenStrokeId = GreenStrokeId;
-				}
-				const double EndD2 = FVector2D::DistSquared(StrokePoint, GreenPoints.Last());
-				if (EndD2 < BestD2)
-				{
-					BestD2 = EndD2;
-					BestGreenStrokeId = GreenStrokeId;
-				}
-			}
-		}
-
-		if (BestD2 <= GreenSelectToleranceSquared)
-		{
-			bFound = true;
-		}
-		if (OutNearestGreenStrokeId && bFound)
-		{
-			*OutNearestGreenStrokeId = BestGreenStrokeId;
-		}
-		if (OutNearestDistanceSquared && bFound)
-		{
-			*OutNearestDistanceSquared = BestD2;
-		}
-		return bFound;
-	}
-
-	static void CollectLocalGreenStrokeIdsForRedStrokes(
-		const TArray<FColoredStroke>& Strokes,
-		const TArray<int32>& RedStrokeIds,
-		const TArray<int32>& AllGreen,
-		double GreenSelectToleranceSquared,
-		TArray<int32>& OutLocalGreenStrokeIds)
-	{
-		OutLocalGreenStrokeIds.Reset();
-		for (int32 GreenStrokeId : AllGreen)
-		{
-			if (!Strokes.IsValidIndex(GreenStrokeId))
-			{
-				continue;
-			}
-			const FStroke& GreenPoints = Strokes[GreenStrokeId].Points;
-			if (GreenPoints.Num() == 0)
-			{
-				continue;
-			}
-
-			bool bNear = false;
-			for (int32 RedStrokeId : RedStrokeIds)
-			{
-				if (!Strokes.IsValidIndex(RedStrokeId))
-				{
-					continue;
-				}
-				for (const FVector2D& RedPoint : Strokes[RedStrokeId].Points)
-				{
-					if (FVector2D::DistSquared(RedPoint, GreenPoints[0]) <= GreenSelectToleranceSquared ||
-						FVector2D::DistSquared(RedPoint, GreenPoints.Last()) <= GreenSelectToleranceSquared)
-					{
-						bNear = true;
-						break;
-					}
-				}
-				if (bNear)
-				{
-					break;
-				}
-			}
-			if (bNear)
-			{
-				OutLocalGreenStrokeIds.Add(GreenStrokeId);
-			}
-		}
-	}
-
-	static void BuildCycleCoreEdgeMask(const CapOps::FGraph& G, TArray<uint8>& OutEdgeUsable)
-	{
-		const int32 EdgeCount = G.StrokeId.Num();
-		OutEdgeUsable.Init(1, EdgeCount);
-		TArray<TArray<int32>> IncidentEdges;
-		IncidentEdges.SetNum(G.NumNodes);
-		TArray<int32> Degree;
-		Degree.Init(0, G.NumNodes);
-
-		for (int32 EdgeIndex = 0; EdgeIndex < EdgeCount; ++EdgeIndex)
-		{
-			if (!G.NodeU.IsValidIndex(EdgeIndex) ||
-				!G.NodeV.IsValidIndex(EdgeIndex) ||
-				G.NodeU[EdgeIndex] < 0 ||
-				G.NodeV[EdgeIndex] < 0 ||
-				G.NodeU[EdgeIndex] >= G.NumNodes ||
-				G.NodeV[EdgeIndex] >= G.NumNodes ||
-				G.NodeU[EdgeIndex] == G.NodeV[EdgeIndex])
-			{
-				OutEdgeUsable[EdgeIndex] = 0;
-				continue;
-			}
-
-			const int32 U = G.NodeU[EdgeIndex];
-			const int32 V = G.NodeV[EdgeIndex];
-			IncidentEdges[U].Add(EdgeIndex);
-			IncidentEdges[V].Add(EdgeIndex);
-			++Degree[U];
-			++Degree[V];
-		}
-
-		TArray<int32> Queue;
-		TArray<uint8> bQueued;
-		bQueued.Init(0, G.NumNodes);
-		for (int32 NodeIndex = 0; NodeIndex < G.NumNodes; ++NodeIndex)
-		{
-			if (Degree[NodeIndex] <= 1)
-			{
-				Queue.Add(NodeIndex);
-				bQueued[NodeIndex] = 1;
-			}
-		}
-
-		for (int32 Head = 0; Head < Queue.Num(); ++Head)
-		{
-			const int32 NodeIndex = Queue[Head];
-			bQueued[NodeIndex] = 0;
-			if (Degree[NodeIndex] > 1)
-			{
-				continue;
-			}
-
-			for (int32 EdgeIndex : IncidentEdges[NodeIndex])
-			{
-				if (!OutEdgeUsable.IsValidIndex(EdgeIndex) || !OutEdgeUsable[EdgeIndex])
-				{
-					continue;
-				}
-
-				OutEdgeUsable[EdgeIndex] = 0;
-				const int32 U = G.NodeU[EdgeIndex];
-				const int32 V = G.NodeV[EdgeIndex];
-				const int32 OtherNode = U == NodeIndex ? V : U;
-				if (Degree.IsValidIndex(U))
-				{
-					--Degree[U];
-				}
-				if (Degree.IsValidIndex(V))
-				{
-					--Degree[V];
-				}
-				if (Degree.IsValidIndex(OtherNode) &&
-					Degree[OtherNode] <= 1 &&
-					!bQueued[OtherNode])
-				{
-					Queue.Add(OtherNode);
-					bQueued[OtherNode] = 1;
-				}
-			}
-		}
-	}
-
-	static bool HasUsableBlackEdge(const CapOps::FGraph& G, const TArray<uint8>& EdgeUsableMask)
-	{
-		for (int32 EdgeIndex = 0; EdgeIndex < G.StrokeId.Num(); ++EdgeIndex)
-		{
-			if (EdgeUsableMask.IsValidIndex(EdgeIndex) &&
-				EdgeUsableMask[EdgeIndex] &&
-				G.bBlack.IsValidIndex(EdgeIndex) &&
-				G.bBlack[EdgeIndex])
-			{
-				return true;
-			}
-		}
-		return false;
-	}
-
-	struct FLoopAnchorDebugEntry
-	{
-		int32 RedGroupIndex = INDEX_NONE;
-		int32 EdgeIndex = INDEX_NONE;
-		int32 StrokeId = INDEX_NONE;
-		int32 NearestGreenStrokeId = INDEX_NONE;
-		double ArcLength = 0.0;
-		double GreenDistanceSquared = TNumericLimits<double>::Max();
-	};
-
-	struct FLoopAnchorSearchOptions
-	{
-		const TArray<uint8>* EdgeUsableMask = nullptr;
-		const TArray<int32>* GreenStrokeIds = nullptr;
-		double GreenSelectToleranceSquared = 0.0;
-		bool bRequireAnchorNearGreen = false;
-		bool bSortAnchorsByLength = false;
-		bool bPreferMinAreaCandidate = false;
-		int32 MaxCandidatesPerAnchor = CapCycleCandidatesPerAnchor;
-		int32 RedGroupIndex = INDEX_NONE;
-		TArray<FLoopAnchorDebugEntry>* AnchorDebugEntries = nullptr;
-	};
-
 	static void CollectTopCycleCandidatesForAnchor(
 		const TArray<FColoredStroke>& Strokes,
 		const CapOps::FGraph& G,
@@ -5633,8 +5355,6 @@ namespace FromLZImageOps
 		const TCHAR* Source,
 		int32 Priority,
 		bool bRequireBlack,
-		bool bPreferMinAreaCandidate,
-		int32 MaxCandidatesPerAnchor,
 		TArray<FLoopCandidate>& OutCandidates)
 	{
 		using namespace CapOps;
@@ -5763,15 +5483,13 @@ namespace FromLZImageOps
 			}
 		}
 
-		OutCandidates.Sort([&Strokes, bPreferMinAreaCandidate](const FLoopCandidate& A, const FLoopCandidate& B)
+		OutCandidates.Sort([&Strokes](const FLoopCandidate& A, const FLoopCandidate& B)
 		{
-			return bPreferMinAreaCandidate
-				? CandidateMinAreaLess(A, B, Strokes)
-				: CandidateGenerationLess(A, B, Strokes);
+			return CandidateGenerationLess(A, B, Strokes);
 		});
-		if (MaxCandidatesPerAnchor >= 0 && OutCandidates.Num() > MaxCandidatesPerAnchor)
+		if (OutCandidates.Num() > CapCycleCandidatesPerAnchor)
 		{
-			OutCandidates.SetNum(MaxCandidatesPerAnchor);
+			OutCandidates.SetNum(CapCycleCandidatesPerAnchor);
 		}
 	}
 
@@ -5782,20 +5500,13 @@ namespace FromLZImageOps
 		int32 Priority,
 		bool bRequireBlack,
 		TArray<FLoopCandidate>& Candidates,
-		TSet<FString>& SeenKeys,
-		const FLoopAnchorSearchOptions& Options = FLoopAnchorSearchOptions())
+		TSet<FString>& SeenKeys)
 	{
 		using namespace CapOps;
 		TArray<TArray<int32>> Adjacency;
 		Adjacency.SetNum(G.NumNodes);
 		for (int32 EdgeIndex = 0; EdgeIndex < G.StrokeId.Num(); ++EdgeIndex)
 		{
-			if (Options.EdgeUsableMask &&
-				(!Options.EdgeUsableMask->IsValidIndex(EdgeIndex) ||
-				 !(*Options.EdgeUsableMask)[EdgeIndex]))
-			{
-				continue;
-			}
 			if (G.NodeU.IsValidIndex(EdgeIndex))
 			{
 				Adjacency[G.NodeU[EdgeIndex]].Add(EdgeIndex);
@@ -5806,27 +5517,12 @@ namespace FromLZImageOps
 			}
 		}
 
-		struct FAnchorRef
-		{
-			int32 EdgeIndex = INDEX_NONE;
-			int32 StrokeId = INDEX_NONE;
-			int32 NearestGreenStrokeId = INDEX_NONE;
-			double ArcLength = 0.0;
-			double GreenDistanceSquared = TNumericLimits<double>::Max();
-		};
-
-		TArray<FAnchorRef> Anchors;
 		for (int32 e = 0; e < G.StrokeId.Num(); ++e)
 		{
-			if (Options.EdgeUsableMask &&
-				(!Options.EdgeUsableMask->IsValidIndex(e) ||
-				 !(*Options.EdgeUsableMask)[e]))
-			{
-				continue;
-			}
 			if (G.bBlack[e] ||
 				(G.bSynthetic.IsValidIndex(e) && G.bSynthetic[e]) ||
-				!Strokes.IsValidIndex(G.StrokeId[e]))
+				!Strokes.IsValidIndex(G.StrokeId[e]) ||
+				StrokeArcLength(Strokes[G.StrokeId[e]]) < CapCycleAnchorMinRealRedLengthPx)
 			{
 				continue;
 			}
@@ -5835,85 +5531,15 @@ namespace FromLZImageOps
 				continue;
 			}
 
-			const int32 StrokeId = G.StrokeId[e];
-			const double AnchorArcLength = StrokeArcLength(Strokes[StrokeId]);
-			if (!Options.bRequireAnchorNearGreen &&
-				AnchorArcLength < CapCycleAnchorMinRealRedLengthPx)
-			{
-				continue;
-			}
-
-			int32 NearestGreenStrokeId = INDEX_NONE;
-			double GreenDistanceSquared = TNumericLimits<double>::Max();
-			if (Options.bRequireAnchorNearGreen)
-			{
-				if (!Options.GreenStrokeIds ||
-					!FindNearestLocalGreenForStroke(
-						Strokes,
-						StrokeId,
-						*Options.GreenStrokeIds,
-						Options.GreenSelectToleranceSquared,
-						&NearestGreenStrokeId,
-						&GreenDistanceSquared))
-				{
-					continue;
-				}
-			}
-
-			FAnchorRef Anchor;
-			Anchor.EdgeIndex = e;
-			Anchor.StrokeId = StrokeId;
-			Anchor.NearestGreenStrokeId = NearestGreenStrokeId;
-			Anchor.ArcLength = AnchorArcLength;
-			Anchor.GreenDistanceSquared = GreenDistanceSquared;
-			Anchors.Add(Anchor);
-
-			if (Options.AnchorDebugEntries)
-			{
-				FLoopAnchorDebugEntry DebugEntry;
-				DebugEntry.RedGroupIndex = Options.RedGroupIndex;
-				DebugEntry.EdgeIndex = e;
-				DebugEntry.StrokeId = StrokeId;
-				DebugEntry.NearestGreenStrokeId = NearestGreenStrokeId;
-				DebugEntry.ArcLength = AnchorArcLength;
-				DebugEntry.GreenDistanceSquared = GreenDistanceSquared;
-				Options.AnchorDebugEntries->Add(MoveTemp(DebugEntry));
-			}
-		}
-
-		if (Options.bSortAnchorsByLength)
-		{
-			Anchors.Sort([](const FAnchorRef& A, const FAnchorRef& B)
-			{
-				if (!FMath::IsNearlyEqual(A.ArcLength, B.ArcLength, 1e-6))
-				{
-					return A.ArcLength > B.ArcLength;
-				}
-				if (!FMath::IsNearlyEqual(A.GreenDistanceSquared, B.GreenDistanceSquared, 1e-6))
-				{
-					return A.GreenDistanceSquared < B.GreenDistanceSquared;
-				}
-				if (A.StrokeId != B.StrokeId)
-				{
-					return A.StrokeId < B.StrokeId;
-				}
-				return A.EdgeIndex < B.EdgeIndex;
-			});
-		}
-
-		for (const FAnchorRef& Anchor : Anchors)
-		{
 			TArray<FLoopCandidate> AnchorCandidates;
 			CollectTopCycleCandidatesForAnchor(
 				Strokes,
 				G,
 				Adjacency,
-				Anchor.EdgeIndex,
+				e,
 				Source,
 				Priority,
 				bRequireBlack,
-				Options.bPreferMinAreaCandidate,
-				Options.MaxCandidatesPerAnchor,
 				AnchorCandidates);
 			for (const FLoopCandidate& Candidate : AnchorCandidates)
 			{
@@ -5978,127 +5604,17 @@ namespace FromLZImageOps
 		}
 	}
 
-	static bool SaveGreenAnchorDebugPng(
-		const TArray<FColoredStroke>& Strokes,
-		const TArray<FLoopAnchorDebugEntry>& Anchors,
-		bool bColorByRedGroup,
-		int32 Width,
-		int32 Height,
-		const FString& Path)
-	{
-		if (Width <= 0 || Height <= 0)
-		{
-			return false;
-		}
-
-		TArray<uint8> RGBA;
-		RGBA.Init(255, Width * Height * 4);
-
-		auto Plot = [&](int32 x, int32 y, uint8 R, uint8 G, uint8 B, int32 Radius)
-		{
-			for (int32 oy = -Radius; oy <= Radius; ++oy)
-			{
-				for (int32 ox = -Radius; ox <= Radius; ++ox)
-				{
-					const int32 xx = x + ox;
-					const int32 yy = y + oy;
-					if (xx < 0 || xx >= Width || yy < 0 || yy >= Height)
-					{
-						continue;
-					}
-					const int32 Off = (yy * Width + xx) * 4;
-					RGBA[Off + 0] = R;
-					RGBA[Off + 1] = G;
-					RGBA[Off + 2] = B;
-					RGBA[Off + 3] = 255;
-				}
-			}
-		};
-
-		auto DrawStroke = [&](int32 StrokeId, uint8 R, uint8 G, uint8 B, int32 Radius)
-		{
-			if (!Strokes.IsValidIndex(StrokeId))
-			{
-				return;
-			}
-			TArray<FIntPoint> LineBuf;
-			const FStroke& Points = Strokes[StrokeId].Points;
-			for (int32 k = 0; k + 1 < Points.Num(); ++k)
-			{
-				const FIntPoint P0(FMath::RoundToInt(Points[k].X), FMath::RoundToInt(Points[k].Y));
-				const FIntPoint P1(FMath::RoundToInt(Points[k + 1].X), FMath::RoundToInt(Points[k + 1].Y));
-				SkelGraph::LinePoints(P0, P1, LineBuf);
-				for (const FIntPoint& P : LineBuf)
-				{
-					Plot(P.X, P.Y, R, G, B, Radius);
-				}
-			}
-		};
-
-		for (int32 StrokeId = 0; StrokeId < Strokes.Num(); ++StrokeId)
-		{
-			switch (Strokes[StrokeId].Color)
-			{
-			case EStrokeColor::Red:
-				DrawStroke(StrokeId, 255, 205, 215, 1);
-				break;
-			case EStrokeColor::Black:
-				DrawStroke(StrokeId, 155, 155, 155, 1);
-				break;
-			case EStrokeColor::Green:
-				DrawStroke(StrokeId, 90, 190, 90, 1);
-				break;
-			default:
-				break;
-			}
-		}
-
-		static const uint8 GroupPalette[][3] = {
-			{230,  25,  75}, { 60, 180,  75}, {  0, 130, 200}, {245, 130,  48},
-			{145,  30, 180}, { 70, 240, 240}, {240,  50, 230}, {210, 245,  60},
-			{250, 190, 190}, {  0, 128, 128}, {230, 190, 255}, {170, 110,  40},
-		};
-		const int32 PaletteCount = UE_ARRAY_COUNT(GroupPalette);
-		for (const FLoopAnchorDebugEntry& Anchor : Anchors)
-		{
-			const int32 ColorIndex = bColorByRedGroup
-				? FMath::Abs(Anchor.RedGroupIndex) % PaletteCount
-				: 4;
-			const uint8* Color = GroupPalette[ColorIndex];
-			DrawStroke(Anchor.StrokeId, Color[0], Color[1], Color[2], 3);
-		}
-
-		IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
-		TSharedPtr<IImageWrapper> IW = IWM.CreateImageWrapper(EImageFormat::PNG);
-		if (!IW.IsValid())
-		{
-			return false;
-		}
-		IW->SetRaw(RGBA.GetData(), RGBA.Num(), Width, Height, ERGBFormat::RGBA, 8);
-		const TArray64<uint8>& Compressed = IW->GetCompressed();
-		return FFileHelper::SaveArrayToFile(
-			TArrayView<const uint8>(Compressed.GetData(), static_cast<int32>(Compressed.Num())),
-			*Path);
-	}
-
 	static void CollectRedFirstLoopCandidates(
 		const TArray<FColoredStroke>& Strokes,
 		const TArray<int32>& RedIdx,
 		const TArray<int32>& BlackIdx,
-		const TArray<int32>& GreenIdx,
 		float NodeSnapTol,
 		int32 FirstSyntheticStrokeId,
-		double GreenSelectToleranceSquared,
-		int32 Width,
-		int32 Height,
-		const FString& PressDir,
 		TArray<FLoopCandidate>& OutCandidates)
 	{
 		using namespace CapOps;
 		OutCandidates.Reset();
 		TSet<FString> SeenKeys;
-		TArray<FLoopAnchorDebugEntry> LocalBlackAnchorDebugEntries;
-		TArray<FLoopAnchorDebugEntry> FallbackAnchorDebugEntries;
 
 		// Phase 1: all red-only endpoint cycles. These get first selection priority.
 		{
@@ -6112,33 +5628,15 @@ namespace FromLZImageOps
 		// Phase 2: each red-only component closes its own endpoints through the global black pool.
 		TArray<TArray<int32>> RedGroups;
 		GroupRedStrokeComponents(Strokes, RedIdx, NodeSnapTol, FirstSyntheticStrokeId, RedGroups);
-		for (int32 RedGroupIndex = 0; RedGroupIndex < RedGroups.Num(); ++RedGroupIndex)
+		for (const TArray<int32>& RedGroup : RedGroups)
 		{
-			const TArray<int32>& RedGroup = RedGroups[RedGroupIndex];
 			TArray<int32> EdgeIds = RedGroup;
 			EdgeIds.Append(BlackIdx);
 			FGraph LocalGraph;
 			BuildGraph(Strokes, EdgeIds, NodeSnapTol, FirstSyntheticStrokeId, LocalGraph);
-			TArray<uint8> LocalEdgeUsableMask;
-			BuildCycleCoreEdgeMask(LocalGraph, LocalEdgeUsableMask);
-			if (!HasUsableBlackEdge(LocalGraph, LocalEdgeUsableMask))
-			{
-				continue;
-			}
-
-			FLoopAnchorSearchOptions Options;
-			Options.EdgeUsableMask = &LocalEdgeUsableMask;
-			Options.GreenStrokeIds = &GreenIdx;
-			Options.GreenSelectToleranceSquared = GreenSelectToleranceSquared;
-			Options.bRequireAnchorNearGreen = true;
-			Options.bSortAnchorsByLength = true;
-			Options.bPreferMinAreaCandidate = true;
-			Options.MaxCandidatesPerAnchor = 1;
-			Options.RedGroupIndex = RedGroupIndex;
-			Options.AnchorDebugEntries = &LocalBlackAnchorDebugEntries;
 			CollectCycleCandidatesFromGraph(
 				Strokes, LocalGraph, TEXT("local_black"), /*Priority*/ 1, /*bRequireBlack*/ true,
-				OutCandidates, SeenKeys, Options);
+				OutCandidates, SeenKeys);
 		}
 
 		// Phase 3: fallback trace over all remaining-style red combinations plus all black.
@@ -6148,36 +5646,10 @@ namespace FromLZImageOps
 			EdgeIds.Append(BlackIdx);
 			FGraph FallbackGraph;
 			BuildGraph(Strokes, EdgeIds, NodeSnapTol, FirstSyntheticStrokeId, FallbackGraph);
-			TArray<uint8> FallbackEdgeUsableMask;
-			BuildCycleCoreEdgeMask(FallbackGraph, FallbackEdgeUsableMask);
-			FLoopAnchorSearchOptions Options;
-			Options.EdgeUsableMask = &FallbackEdgeUsableMask;
-			Options.GreenStrokeIds = &GreenIdx;
-			Options.GreenSelectToleranceSquared = GreenSelectToleranceSquared;
-			Options.bRequireAnchorNearGreen = true;
-			Options.bSortAnchorsByLength = true;
-			Options.bPreferMinAreaCandidate = true;
-			Options.MaxCandidatesPerAnchor = 1;
-			Options.AnchorDebugEntries = &FallbackAnchorDebugEntries;
 			CollectCycleCandidatesFromGraph(
 				Strokes, FallbackGraph, TEXT("fallback_trace"), /*Priority*/ 2, /*bRequireBlack*/ false,
-				OutCandidates, SeenKeys, Options);
+				OutCandidates, SeenKeys);
 		}
-
-		SaveGreenAnchorDebugPng(
-			Strokes,
-			LocalBlackAnchorDebugEntries,
-			/*bColorByRedGroup*/ true,
-			Width,
-			Height,
-			PressDir / TEXT("09_local_black_green_anchors.png"));
-		SaveGreenAnchorDebugPng(
-			Strokes,
-			FallbackAnchorDebugEntries,
-			/*bColorByRedGroup*/ false,
-			Width,
-			Height,
-			PressDir / TEXT("09_fallback_green_anchors.png"));
 	}
 
 	static bool CandidatePassesSelectionValidation(const FLoopCandidate& Candidate, FString& OutReason)
@@ -6359,11 +5831,7 @@ namespace FromLZImageOps
 			double BRedLength = 0.0;
 			for (int32 Id : A.RealRedStrokeIds) { if (Strokes.IsValidIndex(Id)) { ARedLength += StrokeArcLength(Strokes[Id]); } }
 			for (int32 Id : B.RealRedStrokeIds) { if (Strokes.IsValidIndex(Id)) { BRedLength += StrokeArcLength(Strokes[Id]); } }
-			// Aligned with per-anchor `CandidateMinAreaLess`: red-coverage primary
-			// (1.0 px tolerance), then smaller LoopArea, then less black, then fewer
-			// edges, then existing deterministic tiebreakers.
-			if (!FMath::IsNearlyEqual(ARedLength, BRedLength, 1.0)) { return ARedLength > BRedLength; }
-			if (!FMath::IsNearlyEqual(A.LoopArea, B.LoopArea, 1e-6)) { return A.LoopArea < B.LoopArea; }
+			if (!FMath::IsNearlyEqual(ARedLength, BRedLength, 1e-6)) { return ARedLength > BRedLength; }
 			if (!FMath::IsNearlyEqual(A.BlackTotalLength, B.BlackTotalLength, 1e-6)) { return A.BlackTotalLength < B.BlackTotalLength; }
 			if (A.EdgeCount != B.EdgeCount) { return A.EdgeCount < B.EdgeCount; }
 			if (A.RealRedStrokeIds.Num() != B.RealRedStrokeIds.Num()) { return A.RealRedStrokeIds.Num() > B.RealRedStrokeIds.Num(); }
@@ -6544,13 +6012,6 @@ namespace FromLZImageOps
 			Json += FString::Printf(TEXT("    \"green_prefilter_reason\": \"%s\",\n"), *JsonEscaped(C.GreenPrefilterReason));
 			Json += FString::Printf(TEXT("    \"face_evaluation_valid\": %s,\n"), C.bHasValidFaceEvaluation ? TEXT("true") : TEXT("false"));
 			Json += FString::Printf(TEXT("    \"face_evaluation_reason\": \"%s\",\n"), *JsonEscaped(C.FaceEvaluationReason));
-			Json += FString::Printf(TEXT("    \"face_evaluation_mode\": \"%s\",\n"), *JsonEscaped(C.Result.FaceEvaluationMode));
-			Json += FString::Printf(TEXT("    \"direct_face_evaluation_valid\": %s,\n"), C.Result.bFaceEvaluationValid ? TEXT("true") : TEXT("false"));
-			Json += FString::Printf(TEXT("    \"attach_support_plane_fallback_eligible\": %s,\n"), C.Result.bAttachSupportPlaneFallbackEligible ? TEXT("true") : TEXT("false"));
-			Json += FString::Printf(TEXT("    \"support_face_id\": %d,\n"), C.Result.SupportFaceId);
-			Json += FString::Printf(TEXT("    \"support_green_chain_index\": %d,\n"), C.Result.SupportGreenChainIndex);
-			Json += FString::Printf(TEXT("    \"support_face_vote_coverage\": %.6f,\n"), C.Result.SupportFaceVoteCoverage);
-			Json += FString::Printf(TEXT("    \"support_face_reject_reason\": \"%s\",\n"), *JsonEscaped(C.Result.SupportFaceRejectReason));
 			Json += FString::Printf(TEXT("    \"rejected_by_interior_red\": %s,\n"), C.bRejectedByInteriorRed ? TEXT("true") : TEXT("false"));
 			Json += FString::Printf(TEXT("    \"interior_red_reject_reason\": \"%s\",\n"), *JsonEscaped(C.InteriorRedRejectReason));
 			Json += FString::Printf(TEXT("    \"face_source_polygon\": \"%s\",\n"), *JsonEscaped(C.Result.FaceEvaluationSourcePolygon));
@@ -7255,7 +6716,6 @@ namespace FromLZImageOps
 		Out.SideCandidateVectors.Reset();
 		Out.SideCandidateStarts.Reset();
 		Out.SideCandidateEnds.Reset();
-		Out.GreenChainCandidates.Reset();
 		Out.SideStrokeId = -1;
 		Out.SideVector = FVector2D::ZeroVector;
 		Out.SideLength = 0.0;
@@ -7267,7 +6727,7 @@ namespace FromLZImageOps
 		Out.SideTraceTotalGap = 0.0;
 		Out.SideTraceStopReason = TEXT("no_local_green_seed");
 
-		TArray<FGreenSideTraceCandidate> UniqueCandidates;
+		FGreenSideTraceCandidate Best;
 		TSet<FString> SeenChainKeys;
 		for (int32 SeedStrokeId : LocalGreenSeeds)
 		{
@@ -7284,43 +6744,17 @@ namespace FromLZImageOps
 				continue;
 			}
 			SeenChainKeys.Add(ChainKey);
-			UniqueCandidates.Add(Candidate);
+
+			const bool bLongerPath = !Best.bValid || Candidate.PathLength > Best.PathLength + 1e-6;
+			const bool bSamePathButLongerChord =
+				Best.bValid && FMath::IsNearlyEqual(Candidate.PathLength, Best.PathLength, 1e-6) &&
+				Candidate.SideLength > Best.SideLength + 1e-6;
+			if (bLongerPath || bSamePathButLongerChord)
+			{
+				Best = Candidate;
+			}
 		}
 
-		UniqueCandidates.Sort([](const FGreenSideTraceCandidate& A, const FGreenSideTraceCandidate& B)
-		{
-			if (!FMath::IsNearlyEqual(A.PathLength, B.PathLength, 1e-6))
-			{
-				return A.PathLength > B.PathLength;
-			}
-			if (!FMath::IsNearlyEqual(A.SideLength, B.SideLength, 1e-6))
-			{
-				return A.SideLength > B.SideLength;
-			}
-			return A.SeedStrokeId < B.SeedStrokeId;
-		});
-
-		for (const FGreenSideTraceCandidate& Candidate : UniqueCandidates)
-		{
-			FGreenChainCandidate OutCandidate;
-			OutCandidate.SeedStrokeId = Candidate.SeedStrokeId;
-			OutCandidate.StrokeIds = Candidate.ChainStrokeIds;
-			OutCandidate.Start = Candidate.ChainStart;
-			OutCandidate.End = Candidate.ChainEnd;
-			OutCandidate.Vector = Candidate.ChainEnd - Candidate.ChainStart;
-			OutCandidate.SeedDirection = Candidate.SeedDirection;
-			OutCandidate.ChordLength = Candidate.SideLength;
-			OutCandidate.PathLength = Candidate.PathLength;
-			OutCandidate.TotalGap = Candidate.TotalGap;
-			OutCandidate.StopReason = Candidate.StopReason;
-			Out.GreenChainCandidates.Add(MoveTemp(OutCandidate));
-			Out.SideCandidateStarts.Add(Candidate.ChainStart);
-			Out.SideCandidateEnds.Add(Candidate.ChainEnd);
-			Out.SideCandidateVectors.Add(Candidate.ChainEnd - Candidate.ChainStart);
-		}
-
-		const FGreenSideTraceCandidate Best =
-			UniqueCandidates.Num() > 0 ? UniqueCandidates[0] : FGreenSideTraceCandidate();
 		if (Best.bValid)
 		{
 			const FVector2D ChainVector = Best.ChainEnd - Best.ChainStart;
@@ -7334,6 +6768,9 @@ namespace FromLZImageOps
 			Out.SideTraceTotalGap = Best.TotalGap;
 			Out.SideTraceStopReason = Best.StopReason;
 			Out.SideVector = ChainVector;
+			Out.SideCandidateStarts.Add(Best.ChainStart);
+			Out.SideCandidateEnds.Add(Best.ChainEnd);
+			Out.SideCandidateVectors.Add(Out.SideVector);
 		}
 		Out.CapPolygonTranslated.Reset();
 		Out.CapPolygonTranslated.Reserve(Out.CapPolygon.Num());
@@ -7353,27 +6790,47 @@ namespace FromLZImageOps
 		Candidate.LocalGreenStrokeIds.Reset();
 		Candidate.GreenBoundaryLength = 0.0;
 
-		bool bHasCandidateRedPoints = false;
+		TArray<FVector2D> CandidateRedPoints;
 		for (int32 RedStrokeId : Candidate.RealRedStrokeIds)
 		{
-			if (Strokes.IsValidIndex(RedStrokeId) && Strokes[RedStrokeId].Points.Num() > 0)
+			if (Strokes.IsValidIndex(RedStrokeId))
 			{
-				bHasCandidateRedPoints = true;
-				break;
+				CandidateRedPoints.Append(Strokes[RedStrokeId].Points);
 			}
 		}
-		if (!bHasCandidateRedPoints)
+		if (CandidateRedPoints.Num() == 0)
 		{
 			Candidate.GreenPrefilterReason = TEXT("candidate has no real red points for local green discovery");
 			return;
 		}
 
-		CollectLocalGreenStrokeIdsForRedStrokes(
-			Strokes,
-			Candidate.RealRedStrokeIds,
-			AllGreen,
-			GreenSelectToleranceSquared,
-			Candidate.LocalGreenStrokeIds);
+		for (int32 GreenStrokeId : AllGreen)
+		{
+			if (!Strokes.IsValidIndex(GreenStrokeId))
+			{
+				continue;
+			}
+			const FStroke& GreenPoints = Strokes[GreenStrokeId].Points;
+			if (GreenPoints.Num() == 0)
+			{
+				continue;
+			}
+
+			bool bNear = false;
+			for (const FVector2D& RedPoint : CandidateRedPoints)
+			{
+				if (FVector2D::DistSquared(RedPoint, GreenPoints[0]) <= GreenSelectToleranceSquared ||
+					FVector2D::DistSquared(RedPoint, GreenPoints.Last()) <= GreenSelectToleranceSquared)
+				{
+					bNear = true;
+					break;
+				}
+			}
+			if (bNear)
+			{
+				Candidate.LocalGreenStrokeIds.Add(GreenStrokeId);
+			}
+		}
 
 		if (Candidate.LocalGreenStrokeIds.Num() == 0)
 		{
@@ -7426,7 +6883,7 @@ namespace FromLZImageOps
 				*Candidate.Result.ActionDecisionReason);
 	}
 
-	int32 RecoverCapExtrusionsPerComponent(const TArray<FColoredStroke>& Strokes, float ConnectorTol, float BlackSelectTol, int32 Width, int32 Height, const FString& PressDir, const FString& ActionPressDir, const FFromLZFaceReconstructionParams& FaceParams, TArray<FCapExtrusionResult>& OutResults)
+	int32 RecoverCapExtrusionsPerComponent(const TArray<FColoredStroke>& Strokes, float ConnectorTol, float BlackSelectTol, int32 Width, int32 Height, const FString& PressDir, const FString& ActionPressDir, TArray<FCapExtrusionResult>& OutResults)
 	{
 		using namespace CapOps;
 		OutResults.Reset();
@@ -7483,17 +6940,7 @@ namespace FromLZImageOps
 
 		TArray<FLoopCandidate> Candidates;
 		CollectRedFirstLoopCandidates(
-			TraceStrokes,
-			RedIdx,
-			BlackIdx,
-			GreenIdx,
-			CapLoopGraphNodeSnapTol,
-			FirstSyntheticStrokeId,
-			SelTol2,
-			Width,
-			Height,
-			PressDir,
-			Candidates);
+			TraceStrokes, RedIdx, BlackIdx, CapLoopGraphNodeSnapTol, FirstSyntheticStrokeId, Candidates);
 		for (FLoopCandidate& Candidate : Candidates)
 		{
 			PrefilterLoopCandidateByLocalGreen(
@@ -7526,22 +6973,6 @@ namespace FromLZImageOps
 			Request.CapPolygon = Candidate.Result.CapPolygon;
 			Request.CapPolygonTranslated = Candidate.Result.CapPolygonTranslated;
 			Request.SideVectors = Candidate.Result.SideCandidateVectors;
-			Request.GreenChains.Reserve(Candidate.Result.GreenChainCandidates.Num());
-			for (const FGreenChainCandidate& Chain : Candidate.Result.GreenChainCandidates)
-			{
-				FFromLZGreenChainCandidate2D RequestChain;
-				RequestChain.SeedStrokeId = Chain.SeedStrokeId;
-				RequestChain.StrokeIds = Chain.StrokeIds;
-				RequestChain.Start = Chain.Start;
-				RequestChain.End = Chain.End;
-				RequestChain.Vector = Chain.Vector;
-				RequestChain.SeedDirection = Chain.SeedDirection;
-				RequestChain.ChordLength = Chain.ChordLength;
-				RequestChain.PathLength = Chain.PathLength;
-				RequestChain.TotalGap = Chain.TotalGap;
-				RequestChain.StopReason = Chain.StopReason;
-				Request.GreenChains.Add(MoveTemp(RequestChain));
-			}
 			if (Request.SideVectors.Num() == 0 && Candidate.Result.SideVector.SizeSquared() > 1e-8)
 			{
 				Request.SideVectors.Add(Candidate.Result.SideVector);
@@ -7552,7 +6983,7 @@ namespace FromLZImageOps
 		TArray<FFromLZCandidateFaceEvaluation> FaceEvaluations;
 		FString FaceEvaluationError;
 		const bool bFaceEvaluationBatchReady = FFromLZFaceReconstructor::EvaluateCandidateFaces(
-			PressDir, Width, Height, FaceRequests, FaceParams, FaceEvaluations, FaceEvaluationError);
+			PressDir, Width, Height, FaceRequests, FaceEvaluations, FaceEvaluationError);
 		for (int32 CandidateIndex = 0; CandidateIndex < Candidates.Num(); ++CandidateIndex)
 		{
 			FLoopCandidate& Candidate = Candidates[CandidateIndex];
@@ -7572,12 +7003,9 @@ namespace FromLZImageOps
 			}
 
 			const FFromLZCandidateFaceEvaluation& Evaluation = FaceEvaluations[CandidateIndex];
-			Candidate.bHasValidFaceEvaluation = Evaluation.bValid || Evaluation.bAttachSupportPlaneFallbackEligible;
-			Candidate.FaceEvaluationReason = Evaluation.bAttachSupportPlaneFallbackEligible && !Evaluation.SupportFaceRejectReason.IsEmpty()
-				? Evaluation.SupportFaceRejectReason
-				: Evaluation.RejectReason;
+			Candidate.bHasValidFaceEvaluation = Evaluation.bValid;
+			Candidate.FaceEvaluationReason = Evaluation.RejectReason;
 			Candidate.Result.bFaceEvaluationValid = Evaluation.bValid;
-			Candidate.Result.FaceEvaluationMode = Evaluation.EvaluationMode;
 			Candidate.Result.FaceEvaluationSourcePolygon = Evaluation.SourcePolygonKey;
 			Candidate.Result.FaceEvaluationRejectReason = Evaluation.RejectReason;
 			Candidate.Result.FaceEvaluationCapMaskPixels = Evaluation.CapMaskPixels;
@@ -7586,11 +7014,6 @@ namespace FromLZImageOps
 			Candidate.Result.PreselectedFaceOverlapRatio = Evaluation.SelectedFaceOverlapRatio;
 			Candidate.Result.PreselectedFaceNormalSideAngleDegrees = Evaluation.SelectedFaceNormalSideAngleDegrees;
 			Candidate.Result.PreselectedFaceDistanceToCamera = Evaluation.SelectedFaceDistanceToCamera;
-			Candidate.Result.bAttachSupportPlaneFallbackEligible = Evaluation.bAttachSupportPlaneFallbackEligible;
-			Candidate.Result.SupportFaceId = Evaluation.SupportFaceId;
-			Candidate.Result.SupportGreenChainIndex = Evaluation.SupportGreenChainIndex;
-			Candidate.Result.SupportFaceVoteCoverage = Evaluation.SupportFaceVoteCoverage;
-			Candidate.Result.SupportFaceRejectReason = Evaluation.SupportFaceRejectReason;
 		}
 
 		TArray<int32> SelectedCandidateIndices;
@@ -7778,7 +7201,6 @@ namespace FromLZImageOps
 		Json += FString::Printf(TEXT("  \"candidate_source\": \"%s\",\n"), *Res.CandidateSource);
 		Json += FString::Printf(TEXT("  \"candidate_anchor_stroke_id\": %d,\n"), Res.CandidateAnchorStrokeId);
 		Json += FString::Printf(TEXT("  \"face_evaluation_valid\": %s,\n"), Res.bFaceEvaluationValid ? TEXT("true") : TEXT("false"));
-		Json += FString::Printf(TEXT("  \"face_evaluation_mode\": \"%s\",\n"), *JsonEscaped(Res.FaceEvaluationMode));
 		Json += FString::Printf(TEXT("  \"face_evaluation_source_polygon\": \"%s\",\n"), *JsonEscaped(Res.FaceEvaluationSourcePolygon));
 		Json += FString::Printf(TEXT("  \"face_evaluation_reject_reason\": \"%s\",\n"), *JsonEscaped(Res.FaceEvaluationRejectReason));
 		Json += FString::Printf(TEXT("  \"face_evaluation_cap_mask_pixels\": %d,\n"), Res.FaceEvaluationCapMaskPixels);
@@ -7787,11 +7209,6 @@ namespace FromLZImageOps
 		Json += FString::Printf(TEXT("  \"preselected_face_overlap_ratio\": %.6f,\n"), Res.PreselectedFaceOverlapRatio);
 		Json += FString::Printf(TEXT("  \"preselected_face_normal_side_angle_degrees\": %.6f,\n"), Res.PreselectedFaceNormalSideAngleDegrees);
 		Json += FString::Printf(TEXT("  \"preselected_face_distance_to_camera\": %.6f,\n"), Res.PreselectedFaceDistanceToCamera);
-		Json += FString::Printf(TEXT("  \"attach_support_plane_fallback_eligible\": %s,\n"), Res.bAttachSupportPlaneFallbackEligible ? TEXT("true") : TEXT("false"));
-		Json += FString::Printf(TEXT("  \"support_face_id\": %d,\n"), Res.SupportFaceId);
-		Json += FString::Printf(TEXT("  \"support_green_chain_index\": %d,\n"), Res.SupportGreenChainIndex);
-		Json += FString::Printf(TEXT("  \"support_face_vote_coverage\": %.6f,\n"), Res.SupportFaceVoteCoverage);
-		Json += FString::Printf(TEXT("  \"support_face_reject_reason\": \"%s\",\n"), *JsonEscaped(Res.SupportFaceRejectReason));
 
 		// Selected green side stroke (chord vector + endpoint segment).
 		Json += TEXT("  \"side_vectors\": [");
@@ -7810,31 +7227,6 @@ namespace FromLZImageOps
 				Res.SideCandidateEnds[i].X, Res.SideCandidateEnds[i].Y);
 		}
 		Json += TEXT("],\n");
-
-		Json += TEXT("  \"green_chain_candidates\": [\n");
-		for (int32 i = 0; i < Res.GreenChainCandidates.Num(); ++i)
-		{
-			const FGreenChainCandidate& Chain = Res.GreenChainCandidates[i];
-			Json += TEXT("    {\n");
-			Json += FString::Printf(TEXT("      \"index\": %d,\n"), i);
-			Json += FString::Printf(TEXT("      \"seed_stroke_id\": %d,\n"), Chain.SeedStrokeId);
-			Json += TEXT("      \"stroke_ids\": [");
-			for (int32 StrokeIndex = 0; StrokeIndex < Chain.StrokeIds.Num(); ++StrokeIndex)
-			{
-				Json += FString::Printf(TEXT("%s%d"), StrokeIndex == 0 ? TEXT("") : TEXT(", "), Chain.StrokeIds[StrokeIndex]);
-			}
-			Json += TEXT("],\n");
-			Json += FString::Printf(TEXT("      \"start\": [%.6f, %.6f],\n"), Chain.Start.X, Chain.Start.Y);
-			Json += FString::Printf(TEXT("      \"end\": [%.6f, %.6f],\n"), Chain.End.X, Chain.End.Y);
-			Json += FString::Printf(TEXT("      \"vector\": [%.6f, %.6f],\n"), Chain.Vector.X, Chain.Vector.Y);
-			Json += FString::Printf(TEXT("      \"seed_direction\": [%.6f, %.6f],\n"), Chain.SeedDirection.X, Chain.SeedDirection.Y);
-			Json += FString::Printf(TEXT("      \"chord_length\": %.9g,\n"), Chain.ChordLength);
-			Json += FString::Printf(TEXT("      \"path_length\": %.9g,\n"), Chain.PathLength);
-			Json += FString::Printf(TEXT("      \"total_gap\": %.9g,\n"), Chain.TotalGap);
-			Json += FString::Printf(TEXT("      \"stop_reason\": \"%s\"\n"), *JsonEscaped(Chain.StopReason));
-			Json += FString::Printf(TEXT("    }%s\n"), i + 1 < Res.GreenChainCandidates.Num() ? TEXT(",") : TEXT(""));
-		}
-		Json += TEXT("  ],\n");
 
 		Json += TEXT("  \"cap_stroke_ids\": [");
 		for (int32 i = 0; i < Res.CapStrokeIds.Num(); ++i)

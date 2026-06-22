@@ -33,7 +33,6 @@ public:
 		const UWorld* World,
 		FViewport* Viewport,
 		UCameraComponent* CameraComponent,
-		FIntPoint CaptureResolutionOverride = FIntPoint(0, 0),
 		FFromLZCaptureCompletionCallback CompletionCallback = nullptr);
 	static void CancelPendingCapture();
 	static void NotifyViewportDrawn(const UWorld* World, FViewport* Viewport);

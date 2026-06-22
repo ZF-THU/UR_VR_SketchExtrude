@@ -1,0 +1,40 @@
+# Python experiment project (not UE source code)
+Source/UrErSpatialisLT/12_ForOwnUse_V4/
+
+# Unreal Engine generated files
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Visual Studio / Rider / local IDE state
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+*.opensdf
+*.sdf
+*.ipch
+
+# Unreal local user settings
+*.uproject.DotSettings.user
+
+# Build products and logs
+*.log
+*.tmp
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+
+# OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store

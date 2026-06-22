@@ -49,23 +49,6 @@ struct FFromLZFaceReconstructionParams
 	float AttachPathPlaneRelationDistanceTolCm = 10.0f;
 	float SupportForceHardMinGreenChordCm = 1.0f;
 	float SupportForcePreferredMinGreenChordCm = 5.0f;
-
-	bool bWorldOrthoUsePerFaceCapture = true;
-	float WorldOrthoPerFaceClipMarginPixels = 1.5f;
-	bool bWorldOrthoPureRedAllowDiagonalRoot = false;
-	bool bWorldOrthoAllowDiagonalSupports = false;
-	float WorldOrthoBlackAxisToleranceDegrees = 5.0f;
-	float WorldOrthoDiagThresholdDegrees = 40.0f;
-	float WorldOrthoAngleComparisonEpsilonDegrees = 0.000001f;
-	float WorldOrthoBlackNodeSnapTolerancePixels = 10.0f;
-	float WorldOrthoRedMacroCorridorPixels = 5.0f;
-	float WorldOrthoRedMacroGroupMinLengthPixels = 20.0f;
-	float WorldOrthoRedPrimitiveRdpTolerancePixels = 1.0f;
-	float WorldOrthoShortRedEdgeLengthPixels = 20.0f;
-	float WorldOrthoMinAreaRatio = 0.4f;
-	float WorldOrthoMaxWrapGapFraction = 0.1f;
-	bool bWorldOrthoAllowTopologyRepair = true;
-	int32 WorldOrthoPureRedMaxRootCandidates = 5;
 };
 
 struct FFromLZGreenChainCandidate2D
