@@ -44,9 +44,44 @@ struct FFromLZProcessParams
 	float CandidateFaceMinOverlapRatio = 0.25f;
 	float CandidateFaceMaxNormalSideAngleDegrees = 30.0f;
 	float CandidateFacePreferredNormalSideAngleDegrees = 10.0f;
+	bool bEnableAttachSupportPlaneFallback = true;
+	int32 SupportFaceVoteRadiusPx = 2;
+	float SupportPlanePolygonTolPx = 15.0f;
+	float SupportFaceVoteSampleStepPx = 5.0f;
+	float SupportFaceVoteMinCoverage = 0.20f;
+	float NoPenetrationTolCm = 50.0f;
+	float ContactAnchorTolPx = 20.0f;
+	float AttachPathFrontDistanceTieTolCm = 5.0f;
+	float AttachPathPlaneRelationAngleTolDeg = 10.0f;
+	float AttachPathPlaneRelationDistanceTolCm = 10.0f;
+	float SupportForceHardMinGreenChordCm = 1.0f;
+	float SupportForcePreferredMinGreenChordCm = 5.0f;
 
 	int32 CompositeMaxWorkers = 1;
 	int32 ParallelForMaxThreads = 8;
+
+	FFromLZFaceReconstructionParams ToFaceReconstructionParams() const
+	{
+		FFromLZFaceReconstructionParams Out;
+		Out.CandidateFaceMinOverlapRatio = FMath::Max(0.0f, CandidateFaceMinOverlapRatio);
+		Out.CandidateFaceMaxNormalSideAngleDegrees = FMath::Clamp(CandidateFaceMaxNormalSideAngleDegrees, 0.0f, 180.0f);
+		Out.CandidateFacePreferredNormalSideAngleDegrees = FMath::Clamp(CandidateFacePreferredNormalSideAngleDegrees, 0.0f, 180.0f);
+		Out.bEnableAttachSupportPlaneFallback = bEnableAttachSupportPlaneFallback;
+		Out.SupportFaceVoteRadiusPx = FMath::Max(0, SupportFaceVoteRadiusPx);
+		Out.SupportPlanePolygonTolPx = FMath::Max(0.0f, SupportPlanePolygonTolPx);
+		Out.SupportFaceVoteSampleStepPx = FMath::Max(1.0f, SupportFaceVoteSampleStepPx);
+		Out.SupportFaceVoteMinCoverage = FMath::Clamp(SupportFaceVoteMinCoverage, 0.0f, 1.0f);
+		Out.NoPenetrationTolCm = FMath::Max(0.0f, NoPenetrationTolCm);
+		Out.ContactAnchorTolPx = FMath::Max(0.0f, ContactAnchorTolPx);
+		Out.AttachPathFrontDistanceTieTolCm = FMath::Max(0.0f, AttachPathFrontDistanceTieTolCm);
+		Out.AttachPathPlaneRelationAngleTolDeg = FMath::Max(0.0f, AttachPathPlaneRelationAngleTolDeg);
+		Out.AttachPathPlaneRelationDistanceTolCm = FMath::Max(0.0f, AttachPathPlaneRelationDistanceTolCm);
+		Out.SupportForceHardMinGreenChordCm = FMath::Max(0.0f, SupportForceHardMinGreenChordCm);
+		Out.SupportForcePreferredMinGreenChordCm = FMath::Max(
+			Out.SupportForceHardMinGreenChordCm,
+			SupportForcePreferredMinGreenChordCm);
+		return Out;
+	}
 };
 
 using FFromLZCompositeStartedCallback = TFunction<void(const FFromLZPressProcessResult& Result)>;

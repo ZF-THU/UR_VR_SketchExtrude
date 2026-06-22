@@ -339,6 +339,20 @@ FFromLZProcessParams FBPFromLZProcessParams::ToCoreParams() const
 	Params.CandidateFaceMinOverlapRatio = CandidateFaceMinOverlapRatio;
 	Params.CandidateFaceMaxNormalSideAngleDegrees = CandidateFaceMaxNormalSideAngleDegrees;
 	Params.CandidateFacePreferredNormalSideAngleDegrees = CandidateFacePreferredNormalSideAngleDegrees;
+	Params.bEnableAttachSupportPlaneFallback = bEnableAttachSupportPlaneFallback;
+	Params.SupportFaceVoteRadiusPx = FMath::Max(0, SupportFaceVoteRadiusPx);
+	Params.SupportPlanePolygonTolPx = FMath::Max(0.0f, SupportPlanePolygonTolPx);
+	Params.SupportFaceVoteSampleStepPx = FMath::Max(1.0f, SupportFaceVoteSampleStepPx);
+	Params.SupportFaceVoteMinCoverage = FMath::Clamp(SupportFaceVoteMinCoverage, 0.0f, 1.0f);
+	Params.NoPenetrationTolCm = FMath::Max(0.0f, NoPenetrationTolCm);
+	Params.ContactAnchorTolPx = FMath::Max(0.0f, ContactAnchorTolPx);
+	Params.AttachPathFrontDistanceTieTolCm = FMath::Max(0.0f, AttachPathFrontDistanceTieTolCm);
+	Params.AttachPathPlaneRelationAngleTolDeg = FMath::Max(0.0f, AttachPathPlaneRelationAngleTolDeg);
+	Params.AttachPathPlaneRelationDistanceTolCm = FMath::Max(0.0f, AttachPathPlaneRelationDistanceTolCm);
+	Params.SupportForceHardMinGreenChordCm = FMath::Max(0.0f, SupportForceHardMinGreenChordCm);
+	Params.SupportForcePreferredMinGreenChordCm = FMath::Max(
+		Params.SupportForceHardMinGreenChordCm,
+		SupportForcePreferredMinGreenChordCm);
 	Params.CompositeMaxWorkers = CompositeMaxWorkers;
 	Params.ParallelForMaxThreads = ParallelForMaxThreads;
 	return Params;

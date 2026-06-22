@@ -42,6 +42,10 @@ namespace
 	const FName Step11ActionExcavateCutterTag(TEXT("FromLZ_Action_ExcavateCutter"));
 	constexpr double NormalParallelThresholdDegrees = FFromLZFaceReconstructor::CandidateFaceMaxNormalSideAngleDegrees;
 	constexpr double PreferredNormalAngleThresholdDegrees = FFromLZFaceReconstructor::CandidateFacePreferredNormalSideAngleDegrees;
+	constexpr double AttachDirectedRayStepPx = 1.0;
+	constexpr double AttachDirectedRayMinDistancePx = 1.0;
+	constexpr int32 AttachDirectedRayHitRadiusPx = 2;
+	constexpr double AttachDirectedRayAmbiguousDistancePx = 1.5;
 	constexpr double MinProjectedNormalPixels = 1.0;
 	constexpr double SolidCollinearTolerancePixels = 0.75;
 	constexpr double SolidRdpTolerancePixels = 1.25;
@@ -178,6 +182,52 @@ namespace
 		FVector2D ProjectedNormal2D = FVector2D::ZeroVector;
 		double NormalGreenAngleDegrees = -1.0;
 		bool bNormalParallelPass = false;
+		bool bUsedDirectedAttachNormalCheck = false;
+		bool bAttachNormalOrientationValid = false;
+		int32 AttachDirectedGreenChainIndex = -1;
+		FVector2D AttachGreenStart2D = FVector2D::ZeroVector;
+		FVector2D AttachGreenEnd2D = FVector2D::ZeroVector;
+		FVector2D AttachGreenDir2D = FVector2D::ZeroVector;
+		FVector2D AttachExpectedNormalDir2D = FVector2D::ZeroVector;
+		FVector2D RawProjectedNormal2D = FVector2D::ZeroVector;
+		FVector2D OrientedProjectedNormal2D = FVector2D::ZeroVector;
+		bool bAttachPlusRayHit = false;
+		bool bAttachMinusRayHit = false;
+		FVector2D AttachPlusRayHit2D = FVector2D::ZeroVector;
+		FVector2D AttachMinusRayHit2D = FVector2D::ZeroVector;
+		double AttachPlusRayDistancePx = -1.0;
+		double AttachMinusRayDistancePx = -1.0;
+		double UnorientedNormalGreenAngleDegrees = -1.0;
+		FString AttachNormalOrientationReason;
+	};
+
+	struct FDirectedGreenChain2D
+	{
+		int32 ChainIndex = -1;
+		FVector2D Start = FVector2D::ZeroVector;
+		FVector2D End = FVector2D::ZeroVector;
+		FVector2D Dir = FVector2D::ZeroVector;
+		double Length = 0.0;
+		double PathLength = 0.0;
+	};
+
+	struct FSupportFaceVoteResult
+	{
+		bool bFound = false;
+		int32 FaceId = -1;
+		int32 VotePixels = 0;
+		int32 ConsideredPixels = 0;
+		int32 HitSampleCount = 0;
+		int32 TotalSampleCount = 0;
+		double Coverage = 0.0;
+		double VotePixelCoverage = 0.0;
+		double WorldZMax = 0.0;
+		double WorldZAverage = 0.0;
+		double MinCameraDistance = 0.0;
+		double WorstPolygonDistancePx = 0.0;
+		FString Error;
+		TMap<int32, int32> VotesByFaceId;
+		TArray<FFromLZSupportFaceVoteCandidate> FaceCandidates;
 	};
 
 	struct FReconstructedMesh
@@ -398,14 +448,24 @@ namespace
 		FString Error;
 		FString Warning;
 		FString ActorName;
+		FString ReconstructionMethod = TEXT("direct_cap_face");
 		bool bSuccess = false;
+		bool bAttachSupportPlaneFallback = false;
+		bool bForcedSupportPlaneOutput = false;
+		FString ForcedSupportPlaneReason;
+		int32 ForcedSupportPlaneAttemptIndex = INDEX_NONE;
 		int32 CapWidth = 0;
 		int32 CapHeight = 0;
 		int32 FacesWidth = 0;
 		int32 FacesHeight = 0;
 		int32 SelectedFaceId = -1;
+		int32 SupportFaceId = -1;
+		int32 SupportGreenChainIndex = -1;
 		FVector SourcePlanePoint = FVector::ZeroVector;
 		FVector SourcePlaneNormal = FVector::UpVector;
+		FVector SupportPlanePoint = FVector::ZeroVector;
+		FVector SupportPlaneNormal = FVector::UpVector;
+		FVector ExtrusionVectorWorld = FVector::ZeroVector;
 		TArray<FVector> SourceFaceVerticesWorld;
 		TArray<FVector> SourceMaterialProbePointsWorld;
 		FAttachMaterialIdSelection AttachMaterialId;
@@ -449,6 +509,9 @@ namespace
 		FString PolygonKey;
 		FString Error;
 		FString ActorName;
+		FString AttachPathMode;
+		FString ChosenAttachPath;
+		FString AttachPathSelectionReason;
 		int32 CapWidth = 0;
 		int32 CapHeight = 0;
 		int32 FacesWidth = 0;
@@ -456,6 +519,9 @@ namespace
 		int32 CapMaskPixels = 0;
 		int32 MinOverlapPixels = 0;
 		int32 SelectedFaceId = -1;
+		double CandidateFaceMinOverlapRatioUsed = FFromLZFaceReconstructor::CandidateFaceMinOverlapRatio;
+		double NormalParallelThresholdDegreesUsed = NormalParallelThresholdDegrees;
+		double PreferredNormalAngleThresholdDegreesUsed = PreferredNormalAngleThresholdDegrees;
 		FVector2D GreenLineVector2D = FVector2D::ZeroVector;
 		// Every cap-connected green line, mapped to faces image space. The candidate-face
 		// normal passes the parallel filter if it is parallel to ANY of these.
@@ -469,6 +535,97 @@ namespace
 		TArray<int32> MeshTriangles;
 		FVector MeshNormal = FVector::UpVector;
 		FSolidReconstructionResult Solid;
+	};
+
+	struct FSupportPlaneTopologyDebug
+	{
+		bool bChecked = false;
+		bool bPass = false;
+		FString Stage;
+		FString Reason;
+		int32 SourceVertexCount = 0;
+		int32 WorldVertexCount = 0;
+		double SourceAreaPx2 = 0.0;
+		double ProjectedAreaCm2 = 0.0;
+		double MinSourceEdgePx = 0.0;
+		double MinProjectedEdgeCm = 0.0;
+		TArray<FVector2D> ProjectedUVLoop;
+		TArray<FIntPoint> SourceSelfIntersectionEdges;
+		TArray<FIntPoint> ProjectedSelfIntersectionEdges;
+	};
+
+	struct FAttachSupportPlaneFallbackAttempt
+	{
+		int32 ChainIndex = -1;
+		int32 SeedStrokeId = -1;
+		int32 SupportFaceId = -1;
+		bool bSuccess = false;
+		bool bForceable = false;
+		FString ForceableReason;
+		FString RejectReason;
+		FVector2D ChainStartFaceSpace = FVector2D::ZeroVector;
+		FVector2D ChainEndFaceSpace = FVector2D::ZeroVector;
+		double ChainPathLength = 0.0;
+		double ChainChordLength = 0.0;
+		double SupportVoteCoverage = 0.0;
+		double SupportVotePixelCoverage = 0.0;
+		int32 SupportVotePixels = 0;
+		int32 SupportConsideredPixels = 0;
+		int32 SupportHitSampleCount = 0;
+		int32 SupportTotalSampleCount = 0;
+		double SupportFaceWorldZMax = 0.0;
+		double SupportFaceWorldZAverage = 0.0;
+		double SupportMinCameraDistance = 0.0;
+		double SupportWorstPolygonDistancePx = 0.0;
+		TArray<FFromLZSupportFaceVoteCandidate> SupportFaceCandidates;
+		FVector AnchorWorld = FVector::ZeroVector;
+		FVector ChainEndWorld = FVector::ZeroVector;
+		FVector ExtrusionVectorWorld = FVector::ZeroVector;
+		FVector BasePlaneNormal = FVector::UpVector;
+		FVector SupportPlaneNormal = FVector::UpVector;
+		FVector SupportAwareAxisU = FVector::RightVector;
+		FVector SupportAwareAxisV = FVector::UpVector;
+		bool bHasBaseProjection = false;
+		TArray<FVector2D> BaseLoop2D;
+		TArray<FVector2D> CopiedTargetLoop2D;
+		TArray<FVector2D> ReprojectedBaseLoop2D;
+		TArray<FVector2D> ReprojectedCopiedLoop2D;
+		TArray<FVector2D> VirtualBasePlaneQuad2D;
+		TArray<FVector> BaseLoopWorld;
+		TArray<FVector> CopiedLoopWorld;
+		TArray<FVector> VirtualBasePlaneQuadWorld;
+		FSupportPlaneTopologyDebug RawProjectionTopology;
+		FSupportPlaneTopologyDebug RegularizedProjectionTopology;
+		FSupportPlaneTopologyDebug FinalProjectionTopology;
+		TArray<FVector2D> NoPenetrationSamplePixels;
+		TArray<FVector> NoPenetrationBaseWorld;
+		TArray<FVector> NoPenetrationSupportWorld;
+		TArray<double> NoPenetrationViolationCm;
+		bool bOrthogonalAttempted = false;
+		bool bOrthogonalApplied = false;
+		bool bOrthogonalFallbackToOriginal = false;
+		double ContactDistancePixels = 0.0;
+		bool bContactPass = false;
+		double MaxNoPenetrationViolationCm = 0.0;
+		bool bNoPenetrationPass = false;
+		double MaxReprojectionErrorPixels = 0.0;
+		bool bReprojectionPass = false;
+	};
+
+	struct FAttachSupportPlaneFallbackDebug
+	{
+		bool bAttempted = false;
+		bool bSuccess = false;
+		bool bEnabled = false;
+		bool bForcedOutput = false;
+		double SupportFaceVoteMinCoverage = 0.20;
+		double SupportFaceVoteSampleStepPx = 5.0;
+		FString Error;
+		int32 BestForceableAttemptIndex = INDEX_NONE;
+		FString BestForceableReason;
+		int32 ForcedAttemptIndex = INDEX_NONE;
+		FString ForcedReason;
+		TArray<FAttachSupportPlaneFallbackAttempt> Attempts;
 	};
 
 	struct FCommonInputs
@@ -831,6 +988,91 @@ namespace
 			OutEnds.Emplace(B[0]->AsNumber(), B[1]->AsNumber());
 		}
 		return OutStarts.Num() > 0;
+	}
+
+	static bool ParseIntArrayField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Key, TArray<int32>& OutValues)
+	{
+		OutValues.Reset();
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (!Object.IsValid() || !Object->TryGetArrayField(Key, Values))
+		{
+			return false;
+		}
+		for (const TSharedPtr<FJsonValue>& Value : *Values)
+		{
+			if (Value.IsValid() && Value->Type == EJson::Number)
+			{
+				OutValues.Add(FMath::RoundToInt(Value->AsNumber()));
+			}
+		}
+		return OutValues.Num() > 0;
+	}
+
+	static bool ParseGreenChainCandidates(
+		const TSharedPtr<FJsonObject>& Object,
+		TArray<FFromLZGreenChainCandidate2D>& OutChains)
+	{
+		OutChains.Reset();
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (!Object.IsValid() || !Object->TryGetArrayField(TEXT("green_chain_candidates"), Values))
+		{
+			return false;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Value : *Values)
+		{
+			const TSharedPtr<FJsonObject> ChainObject =
+				Value.IsValid() && Value->Type == EJson::Object ? Value->AsObject() : nullptr;
+			if (!ChainObject.IsValid())
+			{
+				continue;
+			}
+
+			FFromLZGreenChainCandidate2D Chain;
+			double Number = -1.0;
+			ChainObject->TryGetNumberField(TEXT("seed_stroke_id"), Number);
+			Chain.SeedStrokeId = FMath::RoundToInt(Number);
+			ParseIntArrayField(ChainObject, TEXT("stroke_ids"), Chain.StrokeIds);
+			ParseVector2DField(ChainObject, TEXT("start"), Chain.Start);
+			ParseVector2DField(ChainObject, TEXT("end"), Chain.End);
+			if (!ParseVector2DField(ChainObject, TEXT("vector"), Chain.Vector))
+			{
+				Chain.Vector = Chain.End - Chain.Start;
+			}
+			ParseVector2DField(ChainObject, TEXT("seed_direction"), Chain.SeedDirection);
+			Number = 0.0;
+			ChainObject->TryGetNumberField(TEXT("chord_length"), Number);
+			Chain.ChordLength = Number;
+			Number = 0.0;
+			ChainObject->TryGetNumberField(TEXT("path_length"), Number);
+			Chain.PathLength = Number;
+			Number = 0.0;
+			ChainObject->TryGetNumberField(TEXT("total_gap"), Number);
+			Chain.TotalGap = Number;
+			ChainObject->TryGetStringField(TEXT("stop_reason"), Chain.StopReason);
+			if ((Chain.End - Chain.Start).SizeSquared() > 1e-8)
+			{
+				if (Chain.ChordLength <= 0.0)
+				{
+					Chain.ChordLength = (Chain.End - Chain.Start).Size();
+				}
+				OutChains.Add(MoveTemp(Chain));
+			}
+		}
+
+		OutChains.Sort([](const FFromLZGreenChainCandidate2D& A, const FFromLZGreenChainCandidate2D& B)
+		{
+			if (!FMath::IsNearlyEqual(A.PathLength, B.PathLength, 1e-6))
+			{
+				return A.PathLength > B.PathLength;
+			}
+			if (!FMath::IsNearlyEqual(A.ChordLength, B.ChordLength, 1e-6))
+			{
+				return A.ChordLength > B.ChordLength;
+			}
+			return A.SeedStrokeId < B.SeedStrokeId;
+		});
+		return OutChains.Num() > 0;
 	}
 
 	static bool ParseVector2DField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Key, FVector2D& Out)
@@ -1857,6 +2099,7 @@ namespace
 	static void SaveCandidateFaceValidationDebug(
 		const FFromLZCandidateFaceRequest& Request,
 		const FFromLZCandidateFaceEvaluation& Evaluation,
+		const FFromLZFaceReconstructionParams& Params,
 		const FCommonInputs& Inputs,
 		int32 SourceWidth,
 		int32 SourceHeight,
@@ -1864,9 +2107,292 @@ namespace
 		const TArray<FFaceCandidate>& Candidates,
 		const FString& OutputDir);
 
+	static bool IsCandidateOverlapPixel(
+		const FCommonInputs& Inputs,
+		const TArray<uint8>& Mask,
+		int32 FaceId,
+		int32 X,
+		int32 Y)
+	{
+		if (X < 0 || Y < 0 || X >= Inputs.FacesWidth || Y >= Inputs.FacesHeight ||
+			Mask.Num() < Inputs.FacesWidth * Inputs.FacesHeight ||
+			Inputs.FacesRGBA.Num() < Inputs.FacesWidth * Inputs.FacesHeight * 4)
+		{
+			return false;
+		}
+
+		const int32 Pixel = Y * Inputs.FacesWidth + X;
+		if (Mask[Pixel] == 0)
+		{
+			return false;
+		}
+
+		const int32 Offset = Pixel * 4;
+		const uint32 Key = ColorKey(
+			Inputs.FacesRGBA[Offset + 0],
+			Inputs.FacesRGBA[Offset + 1],
+			Inputs.FacesRGBA[Offset + 2]);
+		const int32* FoundFaceId = Inputs.FaceIdByColorKey.Find(Key);
+		return FoundFaceId && *FoundFaceId == FaceId;
+	}
+
+	static bool IsCandidateOverlapNearPixel(
+		const FCommonInputs& Inputs,
+		const TArray<uint8>& Mask,
+		int32 FaceId,
+		const FVector2D& Pixel,
+		int32 RadiusPx)
+	{
+		const int32 CenterX = FMath::RoundToInt(Pixel.X);
+		const int32 CenterY = FMath::RoundToInt(Pixel.Y);
+		const int32 Radius = FMath::Max(0, RadiusPx);
+		for (int32 Dy = -Radius; Dy <= Radius; ++Dy)
+		{
+			for (int32 Dx = -Radius; Dx <= Radius; ++Dx)
+			{
+				if (IsCandidateOverlapPixel(Inputs, Mask, FaceId, CenterX + Dx, CenterY + Dy))
+				{
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	static bool FindFirstCandidateOverlapRayHit(
+		const FCommonInputs& Inputs,
+		const TArray<uint8>& Mask,
+		int32 FaceId,
+		const FVector2D& Origin,
+		const FVector2D& Direction,
+		FVector2D& OutHit,
+		double& OutDistance)
+	{
+		OutHit = FVector2D::ZeroVector;
+		OutDistance = -1.0;
+		const FVector2D Unit = Direction.GetSafeNormal();
+		if (Unit.IsNearlyZero() ||
+			Inputs.FacesWidth <= 0 ||
+			Inputs.FacesHeight <= 0 ||
+			Mask.Num() < Inputs.FacesWidth * Inputs.FacesHeight)
+		{
+			return false;
+		}
+
+		const double MaxDistance =
+			FMath::Sqrt(double(Inputs.FacesWidth) * double(Inputs.FacesWidth) +
+				double(Inputs.FacesHeight) * double(Inputs.FacesHeight)) * 1.5;
+		const double ExpandedMinX = -double(AttachDirectedRayHitRadiusPx);
+		const double ExpandedMinY = -double(AttachDirectedRayHitRadiusPx);
+		const double ExpandedMaxX = double(Inputs.FacesWidth - 1 + AttachDirectedRayHitRadiusPx);
+		const double ExpandedMaxY = double(Inputs.FacesHeight - 1 + AttachDirectedRayHitRadiusPx);
+		bool bWasInsideExpandedImage = false;
+		for (double Distance = AttachDirectedRayMinDistancePx;
+			Distance <= MaxDistance;
+			Distance += AttachDirectedRayStepPx)
+		{
+			const FVector2D P = Origin + Unit * Distance;
+			const bool bInsideExpandedImage =
+				P.X >= ExpandedMinX &&
+				P.Y >= ExpandedMinY &&
+				P.X <= ExpandedMaxX &&
+				P.Y <= ExpandedMaxY;
+			if (!bInsideExpandedImage)
+			{
+				if (bWasInsideExpandedImage)
+				{
+					break;
+				}
+				continue;
+			}
+			bWasInsideExpandedImage = true;
+
+			if (IsCandidateOverlapNearPixel(
+				Inputs,
+				Mask,
+				FaceId,
+				P,
+				AttachDirectedRayHitRadiusPx))
+			{
+				OutHit = P;
+				OutDistance = Distance;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	static bool EvaluateAttachDirectedNormalAgainstGreenChains(
+		const FCommonInputs& Inputs,
+		const TArray<uint8>& Mask,
+		const TArray<FDirectedGreenChain2D>& GreenChains,
+		const FVector2D& RawNormalDir,
+		FFaceCandidate& Candidate)
+	{
+		Candidate.bUsedDirectedAttachNormalCheck = true;
+		Candidate.RawProjectedNormal2D = RawNormalDir;
+		Candidate.ProjectedNormal2D = RawNormalDir;
+		Candidate.NormalGreenAngleDegrees = 180.0;
+		Candidate.AttachNormalOrientationReason = TEXT("no directed green chain produced a candidate-overlap ray hit");
+		if (RawNormalDir.IsNearlyZero() || GreenChains.Num() == 0)
+		{
+			Candidate.AttachNormalOrientationReason = TEXT("missing raw projected normal or directed green chain");
+			return false;
+		}
+
+		bool bFound = false;
+		double BestAngle = 180.0;
+		double BestChosenRayDistance = TNumericLimits<double>::Max();
+		FFaceCandidate BestDebug = Candidate;
+		for (const FDirectedGreenChain2D& Chain : GreenChains)
+		{
+			FVector2D PlusHit;
+			FVector2D MinusHit;
+			double PlusDistance = -1.0;
+			double MinusDistance = -1.0;
+			const bool bPlusHit = FindFirstCandidateOverlapRayHit(
+				Inputs,
+				Mask,
+				Candidate.FaceId,
+				Chain.Start,
+				RawNormalDir,
+				PlusHit,
+				PlusDistance);
+			const bool bMinusHit = FindFirstCandidateOverlapRayHit(
+				Inputs,
+				Mask,
+				Candidate.FaceId,
+				Chain.Start,
+				-RawNormalDir,
+				MinusHit,
+				MinusDistance);
+
+			FVector2D OrientedNormal = FVector2D::ZeroVector;
+			FVector2D ExpectedNormalDir = Chain.Dir;
+			double ChosenRayDistance = -1.0;
+			FString Reason;
+			bool bOrientationValid = false;
+			if (bPlusHit && bMinusHit)
+			{
+				const double DistanceDelta = FMath::Abs(PlusDistance - MinusDistance);
+				if (DistanceDelta <= AttachDirectedRayAmbiguousDistancePx)
+				{
+					Reason = FString::Printf(
+						TEXT("chain %d ambiguous: plus/minus ray distances %.3f/%.3f differ by <= %.3f px"),
+						Chain.ChainIndex,
+						PlusDistance,
+						MinusDistance,
+						AttachDirectedRayAmbiguousDistancePx);
+				}
+				else if (PlusDistance < MinusDistance)
+				{
+					OrientedNormal = -RawNormalDir;
+					ChosenRayDistance = PlusDistance;
+					bOrientationValid = true;
+					Reason = TEXT("plus_ray_hit_candidate_overlap_first; attach_oriented_normal_is_negative_projected_face_normal");
+				}
+				else
+				{
+					OrientedNormal = -RawNormalDir;
+					ChosenRayDistance = MinusDistance;
+					bOrientationValid = true;
+					Reason = TEXT("minus_ray_hit_candidate_overlap_first; attach_oriented_normal_is_negative_projected_face_normal");
+				}
+			}
+			else if (bPlusHit)
+			{
+				OrientedNormal = -RawNormalDir;
+				ChosenRayDistance = PlusDistance;
+				bOrientationValid = true;
+				Reason = TEXT("plus_ray_hit_candidate_overlap; attach_oriented_normal_is_negative_projected_face_normal");
+			}
+			else if (bMinusHit)
+			{
+				OrientedNormal = -RawNormalDir;
+				ChosenRayDistance = MinusDistance;
+				bOrientationValid = true;
+				Reason = TEXT("minus_ray_hit_candidate_overlap; attach_oriented_normal_is_negative_projected_face_normal");
+			}
+			else
+			{
+				Reason = FString::Printf(
+					TEXT("chain %d found no +/- normal ray hit on candidate overlap mask"),
+					Chain.ChainIndex);
+			}
+
+			const double UnorientedDot = FMath::Clamp(
+				FMath::Abs(FVector2D::DotProduct(RawNormalDir, ExpectedNormalDir)),
+				0.0,
+				1.0);
+			const double UnorientedAngle = FMath::RadiansToDegrees(FMath::Acos(UnorientedDot));
+			if (!bOrientationValid)
+			{
+				if (Candidate.AttachDirectedGreenChainIndex < 0)
+				{
+					Candidate.AttachDirectedGreenChainIndex = Chain.ChainIndex;
+					Candidate.AttachGreenStart2D = Chain.Start;
+					Candidate.AttachGreenEnd2D = Chain.End;
+					Candidate.AttachGreenDir2D = Chain.Dir;
+					Candidate.AttachExpectedNormalDir2D = ExpectedNormalDir;
+					Candidate.bAttachPlusRayHit = bPlusHit;
+					Candidate.bAttachMinusRayHit = bMinusHit;
+					Candidate.AttachPlusRayHit2D = PlusHit;
+					Candidate.AttachMinusRayHit2D = MinusHit;
+					Candidate.AttachPlusRayDistancePx = PlusDistance;
+					Candidate.AttachMinusRayDistancePx = MinusDistance;
+					Candidate.UnorientedNormalGreenAngleDegrees = UnorientedAngle;
+					Candidate.AttachNormalOrientationReason = Reason;
+				}
+				continue;
+			}
+
+			const double DirectedDot = FMath::Clamp(
+				FVector2D::DotProduct(OrientedNormal.GetSafeNormal(), ExpectedNormalDir),
+				-1.0,
+				1.0);
+			const double DirectedAngle = FMath::RadiansToDegrees(FMath::Acos(DirectedDot));
+			if (!bFound ||
+				DirectedAngle < BestAngle - 1e-6 ||
+				(FMath::IsNearlyEqual(DirectedAngle, BestAngle, 1e-6) &&
+					ChosenRayDistance < BestChosenRayDistance))
+			{
+				bFound = true;
+				BestAngle = DirectedAngle;
+				BestChosenRayDistance = ChosenRayDistance;
+				BestDebug = Candidate;
+				BestDebug.bAttachNormalOrientationValid = true;
+				BestDebug.AttachDirectedGreenChainIndex = Chain.ChainIndex;
+				BestDebug.AttachGreenStart2D = Chain.Start;
+				BestDebug.AttachGreenEnd2D = Chain.End;
+				BestDebug.AttachGreenDir2D = Chain.Dir;
+				BestDebug.AttachExpectedNormalDir2D = ExpectedNormalDir;
+				BestDebug.OrientedProjectedNormal2D = OrientedNormal.GetSafeNormal();
+				BestDebug.ProjectedNormal2D = BestDebug.OrientedProjectedNormal2D;
+				BestDebug.bAttachPlusRayHit = bPlusHit;
+				BestDebug.bAttachMinusRayHit = bMinusHit;
+				BestDebug.AttachPlusRayHit2D = PlusHit;
+				BestDebug.AttachMinusRayHit2D = MinusHit;
+				BestDebug.AttachPlusRayDistancePx = PlusDistance;
+				BestDebug.AttachMinusRayDistancePx = MinusDistance;
+				BestDebug.UnorientedNormalGreenAngleDegrees = UnorientedAngle;
+				BestDebug.NormalGreenAngleDegrees = DirectedAngle;
+				BestDebug.AttachNormalOrientationReason = Reason;
+			}
+		}
+
+		if (bFound)
+		{
+			Candidate = BestDebug;
+			return true;
+		}
+		return false;
+	}
+
 	static FFromLZCandidateFaceEvaluation EvaluateSourcePolygonForFaces(
 		const TArray<FVector2D>& SourcePolygon,
 		const TArray<FVector2D>& SideVectors,
+		const TArray<FFromLZGreenChainCandidate2D>& GreenChains,
+		bool bUseAttachDirectedNormalCheck,
 		int32 SourceWidth,
 		int32 SourceHeight,
 		const FString& SourcePolygonKey,
@@ -1876,6 +2402,7 @@ namespace
 	{
 		FFromLZCandidateFaceEvaluation Evaluation;
 		Evaluation.bEvaluated = true;
+		Evaluation.EvaluationMode = TEXT("direct_cap_face");
 		Evaluation.SourcePolygonKey = SourcePolygonKey;
 
 		if (SourceWidth <= 0 || SourceHeight <= 0 || Inputs.FacesWidth <= 0 || Inputs.FacesHeight <= 0)
@@ -1903,7 +2430,45 @@ namespace
 				FaceSpaceSideVectors.Add(Scaled.GetSafeNormal());
 			}
 		}
-		if (FaceSpaceSideVectors.Num() == 0)
+		TArray<FDirectedGreenChain2D> FaceSpaceGreenChains;
+		for (int32 ChainIndex = 0; ChainIndex < GreenChains.Num(); ++ChainIndex)
+		{
+			const FFromLZGreenChainCandidate2D& Chain = GreenChains[ChainIndex];
+			FDirectedGreenChain2D DirectedChain;
+			DirectedChain.ChainIndex = ChainIndex;
+			DirectedChain.Start = FVector2D(Chain.Start.X * ScaleX, Chain.Start.Y * ScaleY);
+			DirectedChain.End = FVector2D(Chain.End.X * ScaleX, Chain.End.Y * ScaleY);
+			const FVector2D Delta = DirectedChain.End - DirectedChain.Start;
+			DirectedChain.Length = Delta.Size();
+			DirectedChain.PathLength = Chain.PathLength > 0.0 ? Chain.PathLength : DirectedChain.Length;
+			if (DirectedChain.Length >= 1e-6)
+			{
+				DirectedChain.Dir = Delta / DirectedChain.Length;
+				FaceSpaceGreenChains.Add(DirectedChain);
+			}
+		}
+		if (bUseAttachDirectedNormalCheck && FaceSpaceGreenChains.Num() > 1)
+		{
+			FaceSpaceGreenChains.Sort([](const FDirectedGreenChain2D& A, const FDirectedGreenChain2D& B)
+			{
+				if (!FMath::IsNearlyEqual(A.PathLength, B.PathLength, 1e-6))
+				{
+					return A.PathLength > B.PathLength;
+				}
+				if (!FMath::IsNearlyEqual(A.Length, B.Length, 1e-6))
+				{
+					return A.Length > B.Length;
+				}
+				return A.ChainIndex < B.ChainIndex;
+			});
+			FaceSpaceGreenChains.SetNum(1, EAllowShrinking::No);
+		}
+		if (bUseAttachDirectedNormalCheck && FaceSpaceGreenChains.Num() == 0)
+		{
+			Evaluation.RejectReason = TEXT("attach candidate has no non-zero directed green chain in faces image space");
+			return Evaluation;
+		}
+		if (!bUseAttachDirectedNormalCheck && FaceSpaceSideVectors.Num() == 0)
 		{
 			Evaluation.RejectReason = TEXT("candidate has no non-zero side vector in faces image space");
 			return Evaluation;
@@ -1978,22 +2543,37 @@ namespace
 				if (Candidate.bHasProjectedNormal)
 				{
 					const FVector2D NormalDir = Candidate.ProjectedNormal2D.GetSafeNormal();
-					double BestAngle = 180.0;
-					FVector2D BestOrientedNormalDir = NormalDir;
-					for (const FVector2D& GreenDir : FaceSpaceSideVectors)
+					if (bUseAttachDirectedNormalCheck)
 					{
-						const double SignedDot = FVector2D::DotProduct(NormalDir, GreenDir);
-						const double Dot = FMath::Clamp(FMath::Abs(SignedDot), 0.0, 1.0);
-						const double Angle = FMath::RadiansToDegrees(FMath::Acos(Dot));
-						if (Angle < BestAngle)
-						{
-							BestAngle = Angle;
-							BestOrientedNormalDir = SignedDot >= 0.0 ? NormalDir : -NormalDir;
-						}
+						const bool bDirectedAngleValid = EvaluateAttachDirectedNormalAgainstGreenChains(
+							Inputs,
+							Mask,
+							FaceSpaceGreenChains,
+							NormalDir,
+							Candidate);
+						Candidate.bNormalParallelPass =
+							bDirectedAngleValid &&
+							Candidate.NormalGreenAngleDegrees <= NormalParallelThresholdDegrees;
 					}
-					Candidate.ProjectedNormal2D = BestOrientedNormalDir;
-					Candidate.NormalGreenAngleDegrees = BestAngle;
-					Candidate.bNormalParallelPass = BestAngle <= NormalParallelThresholdDegrees;
+					else
+					{
+						double BestAngle = 180.0;
+						FVector2D BestOrientedNormalDir = NormalDir;
+						for (const FVector2D& GreenDir : FaceSpaceSideVectors)
+						{
+							const double SignedDot = FVector2D::DotProduct(NormalDir, GreenDir);
+							const double Dot = FMath::Clamp(FMath::Abs(SignedDot), 0.0, 1.0);
+							const double Angle = FMath::RadiansToDegrees(FMath::Acos(Dot));
+							if (Angle < BestAngle)
+							{
+								BestAngle = Angle;
+								BestOrientedNormalDir = SignedDot >= 0.0 ? NormalDir : -NormalDir;
+							}
+						}
+						Candidate.ProjectedNormal2D = BestOrientedNormalDir;
+						Candidate.NormalGreenAngleDegrees = BestAngle;
+						Candidate.bNormalParallelPass = BestAngle <= NormalParallelThresholdDegrees;
+					}
 					bAnyAnglePass |= bOverlapPass && Candidate.bNormalParallelPass;
 				}
 			}
@@ -2053,10 +2633,12 @@ namespace
 			{
 				Evaluation.RejectReason = TEXT("no face passed all candidate face checks");
 			}
+			Evaluation.EvaluationMode = TEXT("direct_cap_face_rejected");
 			return Evaluation;
 		}
 
 		Evaluation.bValid = true;
+		Evaluation.EvaluationMode = TEXT("direct_cap_face");
 		Evaluation.RejectReason = TEXT("selected");
 		Evaluation.SelectedFaceId = Selected->FaceId;
 		Evaluation.SelectedFaceOverlapPixels = Selected->OverlapPixels;
@@ -2124,6 +2706,321 @@ namespace
 		}
 		const double T = FMath::Clamp(FVector2D::DotProduct(P - A, AB) / LenSq, 0.0, 1.0);
 		return (P - (A + AB * T)).SizeSquared();
+	}
+
+	static double DistancePointToPolylineSquared2D(const FVector2D& P, const TArray<FVector2D>& Poly, bool bClosed)
+	{
+		if (Poly.Num() == 0)
+		{
+			return TNumericLimits<double>::Max();
+		}
+		if (Poly.Num() == 1)
+		{
+			return (P - Poly[0]).SizeSquared();
+		}
+
+		double Best = TNumericLimits<double>::Max();
+		for (int32 i = 0; i + 1 < Poly.Num(); ++i)
+		{
+			Best = FMath::Min(Best, DistancePointToSegmentSquared2D(P, Poly[i], Poly[i + 1]));
+		}
+		if (bClosed)
+		{
+			Best = FMath::Min(Best, DistancePointToSegmentSquared2D(P, Poly.Last(), Poly[0]));
+		}
+		return Best;
+	}
+
+	static bool IsPointInsideOrNearPolygon2D(const FVector2D& P, const TArray<FVector2D>& Poly, double TolPx)
+	{
+		if (Poly.Num() < 3)
+		{
+			return false;
+		}
+		if (PointInPolygon(Poly, P))
+		{
+			return true;
+		}
+		return DistancePointToPolylineSquared2D(P, Poly, true) <= TolPx * TolPx;
+	}
+
+	static bool AccumulateFaceVotesNearPixel(
+		const FCommonInputs& Inputs,
+		const FVector2D& Pixel,
+		int32 RadiusPx,
+		TMap<int32, int32>& InOutVotesByFaceId,
+		int32& InOutConsideredPixels,
+		TSet<int32>* OutFaceIdsHit = nullptr)
+	{
+		if (Inputs.FacesWidth <= 0 || Inputs.FacesHeight <= 0 ||
+			Inputs.FacesRGBA.Num() < Inputs.FacesWidth * Inputs.FacesHeight * 4)
+		{
+			return false;
+		}
+
+		const int32 CenterX = FMath::RoundToInt(Pixel.X);
+		const int32 CenterY = FMath::RoundToInt(Pixel.Y);
+		const int32 Radius = FMath::Max(0, RadiusPx);
+		bool bAny = false;
+		for (int32 Dy = -Radius; Dy <= Radius; ++Dy)
+		{
+			for (int32 Dx = -Radius; Dx <= Radius; ++Dx)
+			{
+				const int32 X = CenterX + Dx;
+				const int32 Y = CenterY + Dy;
+				if (X < 0 || Y < 0 || X >= Inputs.FacesWidth || Y >= Inputs.FacesHeight)
+				{
+					continue;
+				}
+
+				const int32 Off = (Y * Inputs.FacesWidth + X) * 4;
+				const uint32 Key = ColorKey(
+					Inputs.FacesRGBA[Off + 0],
+					Inputs.FacesRGBA[Off + 1],
+					Inputs.FacesRGBA[Off + 2]);
+				if (const int32* FaceId = Inputs.FaceIdByColorKey.Find(Key))
+				{
+					++InOutConsideredPixels;
+					++InOutVotesByFaceId.FindOrAdd(*FaceId);
+					if (OutFaceIdsHit)
+					{
+						OutFaceIdsHit->Add(*FaceId);
+					}
+					bAny = true;
+				}
+			}
+		}
+		return bAny;
+	}
+
+	static double MaxFaceWorldZ(const FFaceInfo& Face)
+	{
+		double MaxZ = -TNumericLimits<double>::Max();
+		for (const FVector& Point : Face.KeyPoints3D)
+		{
+			MaxZ = FMath::Max(MaxZ, double(Point.Z));
+		}
+		return MaxZ > -TNumericLimits<double>::Max() ? MaxZ : double(Face.PlanePoint.Z);
+	}
+
+	static double AverageFaceWorldZ(const FFaceInfo& Face)
+	{
+		if (Face.KeyPoints3D.Num() == 0)
+		{
+			return double(Face.PlanePoint.Z);
+		}
+		double SumZ = 0.0;
+		for (const FVector& Point : Face.KeyPoints3D)
+		{
+			SumZ += Point.Z;
+		}
+		return SumZ / double(Face.KeyPoints3D.Num());
+	}
+
+	static FVector AverageFaceWorldPoint(const FFaceInfo& Face)
+	{
+		if (Face.KeyPoints3D.Num() == 0)
+		{
+			return Face.PlanePoint;
+		}
+		FVector Sum = FVector::ZeroVector;
+		for (const FVector& Point : Face.KeyPoints3D)
+		{
+			Sum += Point;
+		}
+		return Sum / double(Face.KeyPoints3D.Num());
+	}
+
+	static double ComputeWorstPolygonDistancePx(
+		const FFaceInfo& Face,
+		const FVector2D& StartFaceSpace,
+		const FVector2D& Delta,
+		int32 SampleCount)
+	{
+		double WorstDistancePx = 0.0;
+		if (Face.KeyPoints2D.Num() < 3)
+		{
+			return WorstDistancePx;
+		}
+		for (int32 SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
+		{
+			const double T = SampleCount > 1 ? double(SampleIndex) / double(SampleCount - 1) : 0.0;
+			const FVector2D P = StartFaceSpace + Delta * T;
+			if (!PointInPolygon(Face.KeyPoints2D, P))
+			{
+				WorstDistancePx = FMath::Max(
+					WorstDistancePx,
+					FMath::Sqrt(DistancePointToPolylineSquared2D(P, Face.KeyPoints2D, true)));
+			}
+		}
+		return WorstDistancePx;
+	}
+
+	static double ComputeMinCameraDistanceForFaceSamples(
+		const FCommonInputs& Inputs,
+		const FFaceInfo& Face,
+		const TArray<FVector2D>& SamplePixels)
+	{
+		double BestDistance = TNumericLimits<double>::Max();
+		for (const FVector2D& Pixel : SamplePixels)
+		{
+			FVector HitWorld;
+			if (IntersectPixelWithPlaneOrthographic(
+				Inputs.Camera,
+				Inputs.FacesWidth,
+				Inputs.FacesHeight,
+				Pixel,
+				Face.PlanePoint,
+				Face.Normal,
+				HitWorld))
+			{
+				BestDistance = FMath::Min(BestDistance, FVector::Dist(Inputs.Camera.Location, HitWorld));
+			}
+		}
+		if (BestDistance < TNumericLimits<double>::Max())
+		{
+			return BestDistance;
+		}
+		return FVector::Dist(Inputs.Camera.Location, AverageFaceWorldPoint(Face));
+	}
+
+	static bool VoteSupportFaceForSegment(
+		const FCommonInputs& Inputs,
+		const FVector2D& StartFaceSpace,
+		const FVector2D& EndFaceSpace,
+		int32 RadiusPx,
+		double SampleStepPx,
+		double MinSampleCoverage,
+		FSupportFaceVoteResult& OutVote)
+	{
+		OutVote = FSupportFaceVoteResult();
+		const FVector2D Delta = EndFaceSpace - StartFaceSpace;
+		const double Length = Delta.Size();
+		if (!FMath::IsFinite(Length) || Length < 1e-6)
+		{
+			OutVote.Error = TEXT("green chain chord is too short");
+			return false;
+		}
+
+		const double SafeSampleStepPx = FMath::Max(1.0, SampleStepPx);
+		const int32 SampleCount = FMath::Clamp(FMath::CeilToInt(Length / SafeSampleStepPx) + 1, 3, 512);
+		OutVote.TotalSampleCount = SampleCount;
+		TMap<int32, int32> HitSampleCountByFaceId;
+		TMap<int32, TArray<FVector2D>> HitSamplePixelsByFaceId;
+		for (int32 SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
+		{
+			const double T = SampleCount > 1 ? double(SampleIndex) / double(SampleCount - 1) : 0.0;
+			const FVector2D P = StartFaceSpace + Delta * T;
+			TSet<int32> FaceIdsHitThisSample;
+			AccumulateFaceVotesNearPixel(
+				Inputs,
+				P,
+				RadiusPx,
+				OutVote.VotesByFaceId,
+				OutVote.ConsideredPixels,
+				&FaceIdsHitThisSample);
+			for (int32 FaceId : FaceIdsHitThisSample)
+			{
+				++HitSampleCountByFaceId.FindOrAdd(FaceId);
+				HitSamplePixelsByFaceId.FindOrAdd(FaceId).Add(P);
+			}
+		}
+
+		if (OutVote.VotesByFaceId.Num() == 0 || OutVote.ConsideredPixels <= 0)
+		{
+			OutVote.Error = TEXT("green chain did not vote for any captured face");
+			return false;
+		}
+
+		for (const TPair<int32, int32>& Pair : OutVote.VotesByFaceId)
+		{
+			const int32 FaceId = Pair.Key;
+			const int32* FaceIndex = Inputs.FaceIndexById.Find(FaceId);
+			if (!FaceIndex)
+			{
+				continue;
+			}
+			const FFaceInfo& Face = Inputs.Faces[*FaceIndex];
+			FFromLZSupportFaceVoteCandidate Candidate;
+			Candidate.FaceId = FaceId;
+			Candidate.VotePixels = Pair.Value;
+			Candidate.HitSampleCount = HitSampleCountByFaceId.FindRef(FaceId);
+			Candidate.TotalSampleCount = SampleCount;
+			Candidate.TotalFaceVotePixels = OutVote.ConsideredPixels;
+			Candidate.SampleCoverage = double(Candidate.HitSampleCount) / double(FMath::Max(1, SampleCount));
+			Candidate.VotePixelCoverage = double(Candidate.VotePixels) / double(FMath::Max(1, OutVote.ConsideredPixels));
+			Candidate.WorldZMax = MaxFaceWorldZ(Face);
+			Candidate.WorldZAverage = AverageFaceWorldZ(Face);
+			Candidate.MinCameraDistance = ComputeMinCameraDistanceForFaceSamples(
+				Inputs,
+				Face,
+				HitSamplePixelsByFaceId.FindOrAdd(FaceId));
+			Candidate.WorstPolygonDistancePx = ComputeWorstPolygonDistancePx(Face, StartFaceSpace, Delta, SampleCount);
+			Candidate.bCoveragePass = Candidate.SampleCoverage >= MinSampleCoverage;
+			OutVote.FaceCandidates.Add(Candidate);
+		}
+
+		if (OutVote.FaceCandidates.Num() == 0)
+		{
+			OutVote.Error = TEXT("voted support face ids were not in the face table");
+			return false;
+		}
+
+		int32 BestCandidateIndex = INDEX_NONE;
+		for (int32 CandidateIndex = 0; CandidateIndex < OutVote.FaceCandidates.Num(); ++CandidateIndex)
+		{
+			const FFromLZSupportFaceVoteCandidate& Candidate = OutVote.FaceCandidates[CandidateIndex];
+			if (!Candidate.bCoveragePass)
+			{
+				continue;
+			}
+			if (BestCandidateIndex == INDEX_NONE)
+			{
+				BestCandidateIndex = CandidateIndex;
+				continue;
+			}
+			const FFromLZSupportFaceVoteCandidate& Best = OutVote.FaceCandidates[BestCandidateIndex];
+			const bool bHigher =
+				Candidate.WorldZMax > Best.WorldZMax + 1e-6;
+			const bool bTieCloser =
+				FMath::IsNearlyEqual(Candidate.WorldZMax, Best.WorldZMax, 1e-6) &&
+				Candidate.MinCameraDistance < Best.MinCameraDistance - 1e-6;
+			const bool bTieBetterCoverage =
+				FMath::IsNearlyEqual(Candidate.WorldZMax, Best.WorldZMax, 1e-6) &&
+				FMath::IsNearlyEqual(Candidate.MinCameraDistance, Best.MinCameraDistance, 1e-6) &&
+				Candidate.SampleCoverage > Best.SampleCoverage + 1e-6;
+			const bool bTieMoreSamples =
+				FMath::IsNearlyEqual(Candidate.WorldZMax, Best.WorldZMax, 1e-6) &&
+				FMath::IsNearlyEqual(Candidate.MinCameraDistance, Best.MinCameraDistance, 1e-6) &&
+				FMath::IsNearlyEqual(Candidate.SampleCoverage, Best.SampleCoverage, 1e-6) &&
+				Candidate.HitSampleCount > Best.HitSampleCount;
+			if (bHigher || bTieCloser || bTieBetterCoverage || bTieMoreSamples)
+			{
+				BestCandidateIndex = CandidateIndex;
+			}
+		}
+
+		if (!OutVote.FaceCandidates.IsValidIndex(BestCandidateIndex))
+		{
+			OutVote.Error = FString::Printf(
+				TEXT("no captured face reached sample coverage threshold %.3f"),
+				MinSampleCoverage);
+			return false;
+		}
+
+		FFromLZSupportFaceVoteCandidate& BestCandidate = OutVote.FaceCandidates[BestCandidateIndex];
+		BestCandidate.bSelectedForChain = true;
+		OutVote.bFound = true;
+		OutVote.FaceId = BestCandidate.FaceId;
+		OutVote.VotePixels = BestCandidate.VotePixels;
+		OutVote.HitSampleCount = BestCandidate.HitSampleCount;
+		OutVote.Coverage = BestCandidate.SampleCoverage;
+		OutVote.VotePixelCoverage = BestCandidate.VotePixelCoverage;
+		OutVote.WorldZMax = BestCandidate.WorldZMax;
+		OutVote.WorldZAverage = BestCandidate.WorldZAverage;
+		OutVote.MinCameraDistance = BestCandidate.MinCameraDistance;
+		OutVote.WorstPolygonDistancePx = BestCandidate.WorstPolygonDistancePx;
+		return true;
 	}
 
 	static void MarkRdpSegment(const TArray<FVector2D>& Points, int32 Start, int32 End, double ToleranceSq, TArray<bool>& Keep)
@@ -2617,6 +3514,100 @@ namespace
 		Object->SetArrayField(Key, JsonValues);
 	}
 
+	static void SetIntPointArrayField(TSharedRef<FJsonObject> Object, const TCHAR* Key, const TArray<FIntPoint>& Values)
+	{
+		TArray<TSharedPtr<FJsonValue>> JsonValues;
+		JsonValues.Reserve(Values.Num());
+		for (const FIntPoint& Value : Values)
+		{
+			TArray<TSharedPtr<FJsonValue>> Pair;
+			Pair.Add(MakeShared<FJsonValueNumber>(Value.X));
+			Pair.Add(MakeShared<FJsonValueNumber>(Value.Y));
+			JsonValues.Add(MakeShared<FJsonValueArray>(Pair));
+		}
+		Object->SetArrayField(Key, JsonValues);
+	}
+
+	static TSharedRef<FJsonObject> MakeSupportTopologyDebugJson(const FSupportPlaneTopologyDebug& Debug)
+	{
+		TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetBoolField(TEXT("checked"), Debug.bChecked);
+		Obj->SetBoolField(TEXT("pass"), Debug.bPass);
+		Obj->SetStringField(TEXT("stage"), Debug.Stage);
+		Obj->SetStringField(TEXT("reason"), Debug.Reason);
+		Obj->SetNumberField(TEXT("source_vertex_count"), Debug.SourceVertexCount);
+		Obj->SetNumberField(TEXT("world_vertex_count"), Debug.WorldVertexCount);
+		Obj->SetNumberField(TEXT("source_area_px2"), Debug.SourceAreaPx2);
+		Obj->SetNumberField(TEXT("projected_area_cm2"), Debug.ProjectedAreaCm2);
+		Obj->SetNumberField(TEXT("min_source_edge_px"), Debug.MinSourceEdgePx);
+		Obj->SetNumberField(TEXT("min_projected_edge_cm"), Debug.MinProjectedEdgeCm);
+		SetVector2DArrayField(Obj, TEXT("projected_uv_loop"), Debug.ProjectedUVLoop);
+		SetIntPointArrayField(Obj, TEXT("source_self_intersection_edges"), Debug.SourceSelfIntersectionEdges);
+		SetIntPointArrayField(Obj, TEXT("projected_self_intersection_edges"), Debug.ProjectedSelfIntersectionEdges);
+		return Obj;
+	}
+
+	static TSharedRef<FJsonObject> MakeSupportFaceVoteCandidateJson(const FFromLZSupportFaceVoteCandidate& Candidate)
+	{
+		TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetNumberField(TEXT("face_id"), Candidate.FaceId);
+		Obj->SetNumberField(TEXT("vote_pixels"), Candidate.VotePixels);
+		Obj->SetNumberField(TEXT("hit_sample_count"), Candidate.HitSampleCount);
+		Obj->SetNumberField(TEXT("total_sample_count"), Candidate.TotalSampleCount);
+		Obj->SetNumberField(TEXT("total_face_vote_pixels"), Candidate.TotalFaceVotePixels);
+		Obj->SetNumberField(TEXT("sample_coverage"), Candidate.SampleCoverage);
+		Obj->SetNumberField(TEXT("vote_pixel_coverage"), Candidate.VotePixelCoverage);
+		Obj->SetNumberField(TEXT("world_z_max"), Candidate.WorldZMax);
+		Obj->SetNumberField(TEXT("world_z_average"), Candidate.WorldZAverage);
+		Obj->SetNumberField(TEXT("min_camera_distance"), Candidate.MinCameraDistance);
+		Obj->SetNumberField(TEXT("worst_polygon_distance_px"), Candidate.WorstPolygonDistancePx);
+		Obj->SetBoolField(TEXT("coverage_pass"), Candidate.bCoveragePass);
+		Obj->SetBoolField(TEXT("selected_for_chain"), Candidate.bSelectedForChain);
+		return Obj;
+	}
+
+	static void SetSupportFaceVoteCandidatesArray(
+		TSharedRef<FJsonObject> Object,
+		const TCHAR* Key,
+		const TArray<FFromLZSupportFaceVoteCandidate>& Candidates)
+	{
+		TArray<TSharedPtr<FJsonValue>> Values;
+		Values.Reserve(Candidates.Num());
+		for (const FFromLZSupportFaceVoteCandidate& Candidate : Candidates)
+		{
+			Values.Add(MakeShared<FJsonValueObject>(MakeSupportFaceVoteCandidateJson(Candidate)));
+		}
+		Object->SetArrayField(Key, Values);
+	}
+
+	static void SetSupportFaceVoteAttemptDebugFields(
+		TSharedRef<FJsonObject> Object,
+		int32 VotePixels,
+		int32 ConsideredPixels,
+		int32 HitSampleCount,
+		int32 TotalSampleCount,
+		double SampleCoverage,
+		double VotePixelCoverage,
+		double WorldZMax,
+		double WorldZAverage,
+		double MinCameraDistance,
+		double WorstPolygonDistancePx,
+		const TArray<FFromLZSupportFaceVoteCandidate>& Candidates)
+	{
+		Object->SetNumberField(TEXT("support_vote_pixels"), VotePixels);
+		Object->SetNumberField(TEXT("support_considered_pixels"), ConsideredPixels);
+		Object->SetNumberField(TEXT("support_hit_sample_count"), HitSampleCount);
+		Object->SetNumberField(TEXT("support_total_sample_count"), TotalSampleCount);
+		Object->SetNumberField(TEXT("support_vote_coverage"), SampleCoverage);
+		Object->SetNumberField(TEXT("support_sample_coverage"), SampleCoverage);
+		Object->SetNumberField(TEXT("support_vote_pixel_coverage"), VotePixelCoverage);
+		Object->SetNumberField(TEXT("support_face_world_z_max"), WorldZMax);
+		Object->SetNumberField(TEXT("support_face_world_z_average"), WorldZAverage);
+		Object->SetNumberField(TEXT("support_min_camera_distance"), MinCameraDistance);
+		Object->SetNumberField(TEXT("support_worst_polygon_distance_px"), WorstPolygonDistancePx);
+		SetSupportFaceVoteCandidatesArray(Object, TEXT("support_face_candidates"), Candidates);
+	}
+
 	static void SetTriangleArrayField(TSharedRef<FJsonObject> Object, const TCHAR* Key, const TArray<int32>& Triangles)
 	{
 		TArray<TSharedPtr<FJsonValue>> JsonValues;
@@ -2638,11 +3629,18 @@ namespace
 		Root->SetStringField(TEXT("error"), Result.Error);
 		Root->SetStringField(TEXT("warning"), Result.Warning);
 		Root->SetStringField(TEXT("actor_name"), Result.ActorName);
+		Root->SetStringField(TEXT("reconstruction_method"), Result.ReconstructionMethod);
+		Root->SetBoolField(TEXT("attach_support_plane_fallback"), Result.bAttachSupportPlaneFallback);
+		Root->SetBoolField(TEXT("forced_support_plane_output"), Result.bForcedSupportPlaneOutput);
+		Root->SetStringField(TEXT("forced_support_plane_reason"), Result.ForcedSupportPlaneReason);
+		Root->SetNumberField(TEXT("forced_support_plane_attempt_index"), Result.ForcedSupportPlaneAttemptIndex);
 		Root->SetNumberField(TEXT("cap_width"), Result.CapWidth);
 		Root->SetNumberField(TEXT("cap_height"), Result.CapHeight);
 		Root->SetNumberField(TEXT("faces_width"), Result.FacesWidth);
 		Root->SetNumberField(TEXT("faces_height"), Result.FacesHeight);
 		Root->SetNumberField(TEXT("selected_source_face_id"), Result.SelectedFaceId);
+		Root->SetNumberField(TEXT("support_face_id"), Result.SupportFaceId);
+		Root->SetNumberField(TEXT("support_green_chain_index"), Result.SupportGreenChainIndex);
 		Root->SetBoolField(TEXT("projection_matrix_available"), Result.bHasProjectionMatrix);
 		Root->SetStringField(TEXT("projection_matrix_source"), Result.ProjectionMatrixSource);
 		Root->SetStringField(TEXT("projection_validation"), Result.ProjectionValidation);
@@ -2673,6 +3671,9 @@ namespace
 		}
 		Root->SetArrayField(TEXT("source_plane_point"), JsonVector(Result.SourcePlanePoint)->AsArray());
 		Root->SetArrayField(TEXT("source_plane_normal"), JsonVector(Result.SourcePlaneNormal)->AsArray());
+		Root->SetArrayField(TEXT("support_plane_point"), JsonVector(Result.SupportPlanePoint)->AsArray());
+		Root->SetArrayField(TEXT("support_plane_normal"), JsonVector(Result.SupportPlaneNormal)->AsArray());
+		Root->SetArrayField(TEXT("extrusion_vector_world"), JsonVector(Result.ExtrusionVectorWorld)->AsArray());
 		Root->SetArrayField(TEXT("oriented_normal_source_to_copied"), JsonVector(Result.OrientedNormal)->AsArray());
 		Root->SetArrayField(TEXT("source_to_copied_vector_2d"), JsonVector2D(Result.SourceToCopiedVector2D)->AsArray());
 		Root->SetArrayField(TEXT("projected_oriented_normal_2d"), JsonVector2D(Result.ProjectedNormal2D)->AsArray());
@@ -2795,6 +3796,7 @@ namespace
 	static void SaveCandidateFaceValidationDebug(
 		const FFromLZCandidateFaceRequest& Request,
 		const FFromLZCandidateFaceEvaluation& Evaluation,
+		const FFromLZFaceReconstructionParams& Params,
 		const FCommonInputs& Inputs,
 		int32 SourceWidth,
 		int32 SourceHeight,
@@ -2891,6 +3893,22 @@ namespace
 						FColor(0, 255, 80, 255), 2);
 				}
 			}
+			for (int32 ChainIndex = 0; ChainIndex < Request.GreenChains.Num(); ++ChainIndex)
+			{
+				const FFromLZGreenChainCandidate2D& Chain = Request.GreenChains[ChainIndex];
+				const FVector2D ChainStart(Chain.Start.X * ScaleX, Chain.Start.Y * ScaleY);
+				const FVector2D ChainEnd(Chain.End.X * ScaleX, Chain.End.Y * ScaleY);
+				if ((ChainEnd - ChainStart).SizeSquared() > 1e-8)
+				{
+					const bool bSelectedSupportChain = ChainIndex == Evaluation.SupportGreenChainIndex;
+					DrawArrowRGBA(
+						RGBA, Inputs.FacesWidth, Inputs.FacesHeight,
+						ChainStart,
+						ChainEnd,
+						bSelectedSupportChain ? FColor(0, 255, 255, 255) : FColor(30, 180, 30, 255),
+						bSelectedSupportChain ? 3 : 1);
+				}
+			}
 
 			const double NormalArrowLength = 110.0;
 			for (const FFaceCandidate& Candidate : Candidates)
@@ -2926,6 +3944,56 @@ namespace
 				DrawArrowRGBA(
 					RGBA, Inputs.FacesWidth, Inputs.FacesHeight,
 					Candidate.MaskCentroid, Tip, ArrowColor, 2);
+
+				if (Candidate.bUsedDirectedAttachNormalCheck)
+				{
+					DrawPointRGBA(
+						RGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						FMath::RoundToInt(Candidate.AttachGreenStart2D.X),
+						FMath::RoundToInt(Candidate.AttachGreenStart2D.Y),
+						FColor(255, 255, 255, 255),
+						3);
+					if (Candidate.bAttachPlusRayHit)
+					{
+						DrawLineRGBA(
+							RGBA,
+							Inputs.FacesWidth,
+							Inputs.FacesHeight,
+							Candidate.AttachGreenStart2D,
+							Candidate.AttachPlusRayHit2D,
+							FColor(0, 220, 255, 255),
+							1);
+						DrawPointRGBA(
+							RGBA,
+							Inputs.FacesWidth,
+							Inputs.FacesHeight,
+							FMath::RoundToInt(Candidate.AttachPlusRayHit2D.X),
+							FMath::RoundToInt(Candidate.AttachPlusRayHit2D.Y),
+							FColor(0, 220, 255, 255),
+							3);
+					}
+					if (Candidate.bAttachMinusRayHit)
+					{
+						DrawLineRGBA(
+							RGBA,
+							Inputs.FacesWidth,
+							Inputs.FacesHeight,
+							Candidate.AttachGreenStart2D,
+							Candidate.AttachMinusRayHit2D,
+							FColor(255, 150, 0, 255),
+							1);
+						DrawPointRGBA(
+							RGBA,
+							Inputs.FacesWidth,
+							Inputs.FacesHeight,
+							FMath::RoundToInt(Candidate.AttachMinusRayHit2D.X),
+							FMath::RoundToInt(Candidate.AttachMinusRayHit2D.Y),
+							FColor(255, 150, 0, 255),
+							3);
+					}
+				}
 			}
 
 			SaveRGBAToPng(
@@ -2938,19 +4006,49 @@ namespace
 		Root->SetStringField(TEXT("action"), Request.Action);
 		Root->SetStringField(TEXT("source_polygon"), Evaluation.SourcePolygonKey);
 		Root->SetBoolField(TEXT("valid"), Evaluation.bValid);
+		Root->SetStringField(TEXT("evaluation_mode"), Evaluation.EvaluationMode);
 		Root->SetStringField(TEXT("reason"), Evaluation.RejectReason);
 		Root->SetNumberField(TEXT("cap_mask_pixels"), Evaluation.CapMaskPixels);
 		Root->SetNumberField(TEXT("overlap_threshold"), FFromLZFaceReconstructor::CandidateFaceMinOverlapRatio);
 		Root->SetNumberField(TEXT("max_normal_side_angle_degrees"), FFromLZFaceReconstructor::CandidateFaceMaxNormalSideAngleDegrees);
 		Root->SetNumberField(TEXT("preferred_normal_side_angle_degrees"), FFromLZFaceReconstructor::CandidateFacePreferredNormalSideAngleDegrees);
+		Root->SetStringField(
+			TEXT("normal_green_angle_mode"),
+			Request.Action.Equals(TEXT("attach"), ESearchCase::IgnoreCase)
+				? TEXT("attach_directed_2d_ray_to_candidate_overlap_mask")
+				: TEXT("unoriented_2d_parallel"));
+		Root->SetNumberField(TEXT("attach_directed_ray_step_px"), AttachDirectedRayStepPx);
+		Root->SetNumberField(TEXT("attach_directed_ray_min_distance_px"), AttachDirectedRayMinDistancePx);
+		Root->SetNumberField(TEXT("attach_directed_ray_hit_radius_px"), AttachDirectedRayHitRadiusPx);
+		Root->SetNumberField(TEXT("attach_directed_ray_ambiguous_distance_px"), AttachDirectedRayAmbiguousDistancePx);
+		Root->SetBoolField(TEXT("attach_support_plane_fallback_enabled"), Params.bEnableAttachSupportPlaneFallback);
+		Root->SetNumberField(TEXT("support_face_vote_radius_px"), Params.SupportFaceVoteRadiusPx);
+		Root->SetNumberField(TEXT("support_plane_polygon_tol_px"), Params.SupportPlanePolygonTolPx);
+		Root->SetBoolField(TEXT("support_plane_polygon_check_enforced"), false);
+		Root->SetNumberField(TEXT("support_face_vote_sample_step_px"), Params.SupportFaceVoteSampleStepPx);
+		Root->SetNumberField(TEXT("support_face_vote_min_coverage"), Params.SupportFaceVoteMinCoverage);
+		Root->SetNumberField(TEXT("no_penetration_tol_cm"), Params.NoPenetrationTolCm);
+		Root->SetNumberField(TEXT("contact_anchor_tol_px"), Params.ContactAnchorTolPx);
+		Root->SetNumberField(TEXT("attach_path_front_distance_tie_tol_cm"), Params.AttachPathFrontDistanceTieTolCm);
+		Root->SetNumberField(TEXT("attach_path_plane_relation_angle_tol_deg"), Params.AttachPathPlaneRelationAngleTolDeg);
+		Root->SetNumberField(TEXT("attach_path_plane_relation_distance_tol_cm"), Params.AttachPathPlaneRelationDistanceTolCm);
+		Root->SetNumberField(TEXT("support_force_hard_min_green_chord_cm"), Params.SupportForceHardMinGreenChordCm);
+		Root->SetNumberField(TEXT("support_force_preferred_min_green_chord_cm"), Params.SupportForcePreferredMinGreenChordCm);
 		Root->SetNumberField(TEXT("selected_face_id"), Evaluation.SelectedFaceId);
 		Root->SetNumberField(TEXT("selected_face_overlap_pixels"), Evaluation.SelectedFaceOverlapPixels);
 		Root->SetNumberField(TEXT("selected_face_overlap_ratio"), Evaluation.SelectedFaceOverlapRatio);
 		Root->SetNumberField(TEXT("selected_face_normal_side_angle_degrees"), Evaluation.SelectedFaceNormalSideAngleDegrees);
 		Root->SetNumberField(TEXT("selected_face_distance_to_camera"), Evaluation.SelectedFaceDistanceToCamera);
+		Root->SetBoolField(TEXT("attach_support_plane_fallback_eligible"), Evaluation.bAttachSupportPlaneFallbackEligible);
+		Root->SetNumberField(TEXT("support_face_id"), Evaluation.SupportFaceId);
+		Root->SetNumberField(TEXT("support_green_chain_index"), Evaluation.SupportGreenChainIndex);
+		Root->SetNumberField(TEXT("support_face_vote_coverage"), Evaluation.SupportFaceVoteCoverage);
+		Root->SetStringField(TEXT("support_face_reject_reason"), Evaluation.SupportFaceRejectReason);
 		TSharedRef<FJsonObject> Legend = MakeShared<FJsonObject>();
 		Legend->SetStringField(TEXT("white_outline"), TEXT("candidate source polygon"));
 		Legend->SetStringField(TEXT("green_arrow"), TEXT("local-green side vector"));
+		Legend->SetStringField(TEXT("thin_green_arrows"), TEXT("support fallback green chain candidates"));
+		Legend->SetStringField(TEXT("cyan_thick_arrow"), TEXT("selected support fallback green chain in Step9 precheck"));
 		Legend->SetStringField(TEXT("red_mask"), TEXT("background or face overlap below threshold"));
 		Legend->SetStringField(TEXT("yellow_mask_or_arrow"), TEXT("overlap passed but plane intersection or normal-angle validation failed"));
 		Legend->SetStringField(TEXT("cyan_mask_or_arrow"), TEXT("face passed all hard conditions but was not selected"));
@@ -2973,9 +4071,108 @@ namespace
 			CandidateObject->SetBoolField(TEXT("normal_side_angle_pass"), Candidate.bNormalParallelPass);
 			CandidateObject->SetNumberField(TEXT("distance_to_camera"), Candidate.DistanceToCamera);
 			CandidateObject->SetBoolField(TEXT("selected"), Candidate.FaceId == Evaluation.SelectedFaceId);
+			CandidateObject->SetBoolField(TEXT("used_directed_attach_normal_check"), Candidate.bUsedDirectedAttachNormalCheck);
+			CandidateObject->SetBoolField(TEXT("attach_normal_orientation_valid"), Candidate.bAttachNormalOrientationValid);
+			CandidateObject->SetNumberField(TEXT("attach_directed_green_chain_index"), Candidate.AttachDirectedGreenChainIndex);
+			CandidateObject->SetArrayField(TEXT("attach_green_start_2d"), JsonVector2D(Candidate.AttachGreenStart2D)->AsArray());
+			CandidateObject->SetArrayField(TEXT("attach_green_end_2d"), JsonVector2D(Candidate.AttachGreenEnd2D)->AsArray());
+			CandidateObject->SetArrayField(TEXT("attach_green_dir_2d"), JsonVector2D(Candidate.AttachGreenDir2D)->AsArray());
+			CandidateObject->SetArrayField(TEXT("attach_expected_normal_dir_2d"), JsonVector2D(Candidate.AttachExpectedNormalDir2D)->AsArray());
+			CandidateObject->SetArrayField(TEXT("raw_projected_normal_2d"), JsonVector2D(Candidate.RawProjectedNormal2D)->AsArray());
+			CandidateObject->SetArrayField(TEXT("oriented_projected_normal_2d"), JsonVector2D(Candidate.OrientedProjectedNormal2D)->AsArray());
+			CandidateObject->SetNumberField(TEXT("unoriented_normal_side_angle_degrees"), Candidate.UnorientedNormalGreenAngleDegrees);
+			CandidateObject->SetNumberField(TEXT("directed_normal_side_angle_degrees"), Candidate.NormalGreenAngleDegrees);
+			CandidateObject->SetBoolField(TEXT("plus_ray_hit"), Candidate.bAttachPlusRayHit);
+			CandidateObject->SetBoolField(TEXT("minus_ray_hit"), Candidate.bAttachMinusRayHit);
+			CandidateObject->SetArrayField(TEXT("plus_ray_hit_2d"), JsonVector2D(Candidate.AttachPlusRayHit2D)->AsArray());
+			CandidateObject->SetArrayField(TEXT("minus_ray_hit_2d"), JsonVector2D(Candidate.AttachMinusRayHit2D)->AsArray());
+			CandidateObject->SetNumberField(TEXT("plus_ray_distance_px"), Candidate.AttachPlusRayDistancePx);
+			CandidateObject->SetNumberField(TEXT("minus_ray_distance_px"), Candidate.AttachMinusRayDistancePx);
+			CandidateObject->SetStringField(TEXT("attach_normal_orientation_reason"), Candidate.AttachNormalOrientationReason);
 			CandidateValues.Add(MakeShared<FJsonValueObject>(CandidateObject));
 		}
 		Root->SetArrayField(TEXT("faces"), CandidateValues);
+
+		TMap<int32, const FFromLZSupportFaceVoteAttempt*> SupportVoteAttemptByChainIndex;
+		TArray<TSharedPtr<FJsonValue>> SupportVoteAttemptValues;
+		for (const FFromLZSupportFaceVoteAttempt& Attempt : Evaluation.SupportFaceVoteAttempts)
+		{
+			SupportVoteAttemptByChainIndex.Add(Attempt.ChainIndex, &Attempt);
+			TSharedRef<FJsonObject> AttemptObject = MakeShared<FJsonObject>();
+			AttemptObject->SetNumberField(TEXT("chain_index"), Attempt.ChainIndex);
+			AttemptObject->SetNumberField(TEXT("seed_stroke_id"), Attempt.SeedStrokeId);
+			AttemptObject->SetArrayField(TEXT("chain_start_face_space"), JsonVector2D(Attempt.ChainStartFaceSpace)->AsArray());
+			AttemptObject->SetArrayField(TEXT("chain_end_face_space"), JsonVector2D(Attempt.ChainEndFaceSpace)->AsArray());
+			AttemptObject->SetNumberField(TEXT("chain_chord_length"), Attempt.ChainChordLength);
+			AttemptObject->SetNumberField(TEXT("chain_path_length"), Attempt.ChainPathLength);
+			AttemptObject->SetBoolField(TEXT("vote_found"), Attempt.bVoteFound);
+			AttemptObject->SetBoolField(TEXT("coverage_pass"), Attempt.bCoveragePass);
+			AttemptObject->SetBoolField(TEXT("selected"), Attempt.bSelected);
+			AttemptObject->SetNumberField(TEXT("support_face_id"), Attempt.SupportFaceId);
+			SetSupportFaceVoteAttemptDebugFields(
+				AttemptObject,
+				Attempt.SupportVotePixels,
+				Attempt.SupportConsideredPixels,
+				Attempt.SupportHitSampleCount,
+				Attempt.SupportTotalSampleCount,
+				Attempt.SupportVoteCoverage,
+				Attempt.SupportVotePixelCoverage,
+				Attempt.SupportFaceWorldZMax,
+				Attempt.SupportFaceWorldZAverage,
+				Attempt.SupportMinCameraDistance,
+				Attempt.SupportWorstPolygonDistancePx,
+				Attempt.SupportFaceCandidates);
+			AttemptObject->SetStringField(TEXT("reject_reason"), Attempt.RejectReason);
+			SupportVoteAttemptValues.Add(MakeShared<FJsonValueObject>(AttemptObject));
+		}
+		Root->SetArrayField(TEXT("support_face_vote_attempts"), SupportVoteAttemptValues);
+
+		TArray<TSharedPtr<FJsonValue>> GreenChainValues;
+		for (int32 ChainIndex = 0; ChainIndex < Request.GreenChains.Num(); ++ChainIndex)
+		{
+			const FFromLZGreenChainCandidate2D& Chain = Request.GreenChains[ChainIndex];
+			TSharedRef<FJsonObject> ChainObject = MakeShared<FJsonObject>();
+			ChainObject->SetNumberField(TEXT("index"), ChainIndex);
+			ChainObject->SetNumberField(TEXT("seed_stroke_id"), Chain.SeedStrokeId);
+			SetIntArrayField(ChainObject, TEXT("stroke_ids"), Chain.StrokeIds);
+			ChainObject->SetArrayField(TEXT("start"), JsonVector2D(Chain.Start)->AsArray());
+			ChainObject->SetArrayField(TEXT("end"), JsonVector2D(Chain.End)->AsArray());
+			ChainObject->SetArrayField(TEXT("vector"), JsonVector2D(Chain.Vector)->AsArray());
+			ChainObject->SetArrayField(TEXT("seed_direction"), JsonVector2D(Chain.SeedDirection)->AsArray());
+			ChainObject->SetNumberField(TEXT("chord_length"), Chain.ChordLength);
+			ChainObject->SetNumberField(TEXT("path_length"), Chain.PathLength);
+			ChainObject->SetNumberField(TEXT("total_gap"), Chain.TotalGap);
+			ChainObject->SetStringField(TEXT("stop_reason"), Chain.StopReason);
+			if (const FFromLZSupportFaceVoteAttempt* const* FoundAttempt = SupportVoteAttemptByChainIndex.Find(ChainIndex))
+			{
+				const FFromLZSupportFaceVoteAttempt& Attempt = **FoundAttempt;
+				ChainObject->SetBoolField(TEXT("support_vote_attempted"), true);
+				ChainObject->SetBoolField(TEXT("support_vote_found"), Attempt.bVoteFound);
+				ChainObject->SetBoolField(TEXT("support_vote_coverage_pass"), Attempt.bCoveragePass);
+				ChainObject->SetBoolField(TEXT("support_vote_selected"), Attempt.bSelected);
+				ChainObject->SetNumberField(TEXT("support_face_id"), Attempt.SupportFaceId);
+				SetSupportFaceVoteAttemptDebugFields(
+					ChainObject,
+					Attempt.SupportVotePixels,
+					Attempt.SupportConsideredPixels,
+					Attempt.SupportHitSampleCount,
+					Attempt.SupportTotalSampleCount,
+					Attempt.SupportVoteCoverage,
+					Attempt.SupportVotePixelCoverage,
+					Attempt.SupportFaceWorldZMax,
+					Attempt.SupportFaceWorldZAverage,
+					Attempt.SupportMinCameraDistance,
+					Attempt.SupportWorstPolygonDistancePx,
+					Attempt.SupportFaceCandidates);
+				ChainObject->SetStringField(TEXT("support_vote_reject_reason"), Attempt.RejectReason);
+			}
+			else
+			{
+				ChainObject->SetBoolField(TEXT("support_vote_attempted"), false);
+			}
+			GreenChainValues.Add(MakeShared<FJsonValueObject>(ChainObject));
+		}
+		Root->SetArrayField(TEXT("green_chain_candidates"), GreenChainValues);
 		SaveJsonObject(Root, OutputDir / TEXT("face_validation.json"));
 	}
 
@@ -4701,6 +5898,163 @@ namespace
 		return false;
 	}
 
+	static void FindPolygonSelfIntersections2D(
+		const TArray<FVector2D>& Polygon,
+		TArray<FIntPoint>& OutEdgePairs)
+	{
+		OutEdgePairs.Reset();
+		const int32 Count = Polygon.Num();
+		for (int32 AIndex = 0; AIndex < Count; ++AIndex)
+		{
+			const int32 ANext = (AIndex + 1) % Count;
+			for (int32 BIndex = AIndex + 1; BIndex < Count; ++BIndex)
+			{
+				const int32 BNext = (BIndex + 1) % Count;
+				if (AIndex == BIndex || ANext == BIndex || BNext == AIndex)
+				{
+					continue;
+				}
+				if (SegmentsIntersectStrict2D(
+					Polygon[AIndex],
+					Polygon[ANext],
+					Polygon[BIndex],
+					Polygon[BNext]))
+				{
+					OutEdgePairs.Add(FIntPoint(AIndex, BIndex));
+				}
+			}
+		}
+	}
+
+	static double MinClosedLoopEdgeLength2D(const TArray<FVector2D>& Loop)
+	{
+		if (Loop.Num() < 2)
+		{
+			return 0.0;
+		}
+		double MinLen = TNumericLimits<double>::Max();
+		for (int32 Index = 0; Index < Loop.Num(); ++Index)
+		{
+			MinLen = FMath::Min(
+				MinLen,
+				FVector2D::Distance(Loop[Index], Loop[(Index + 1) % Loop.Num()]));
+		}
+		return FMath::IsFinite(MinLen) ? MinLen : 0.0;
+	}
+
+	static bool CheckSupportPlaneProjectionTopology(
+		const FString& Stage,
+		const TArray<FVector2D>& SourceLoop2D,
+		const TArray<FVector>& LoopWorld,
+		const FVector& Origin,
+		const FVector& AxisU,
+		const FVector& AxisV,
+		FSupportPlaneTopologyDebug& OutDebug)
+	{
+		constexpr double MinProjectedAreaCm2 = 1e-4;
+		constexpr double MinProjectedEdgeCm = 1e-3;
+		constexpr double MinSourceAreaPx2 = 1e-3;
+		constexpr double MinSourceEdgePx = 1e-3;
+
+		OutDebug = FSupportPlaneTopologyDebug();
+		OutDebug.bChecked = true;
+		OutDebug.Stage = Stage;
+		OutDebug.SourceVertexCount = SourceLoop2D.Num();
+		OutDebug.WorldVertexCount = LoopWorld.Num();
+		OutDebug.SourceAreaPx2 = FMath::Abs(PolygonArea2D(SourceLoop2D));
+		OutDebug.MinSourceEdgePx = MinClosedLoopEdgeLength2D(SourceLoop2D);
+
+		if (SourceLoop2D.Num() < 3)
+		{
+			OutDebug.Reason = TEXT("source cap loop has fewer than three vertices");
+			return false;
+		}
+		if (LoopWorld.Num() != SourceLoop2D.Num())
+		{
+			OutDebug.Reason = FString::Printf(
+				TEXT("source/world vertex count mismatch: %d vs %d"),
+				SourceLoop2D.Num(),
+				LoopWorld.Num());
+			return false;
+		}
+		if (OutDebug.SourceAreaPx2 <= MinSourceAreaPx2)
+		{
+			OutDebug.Reason = FString::Printf(
+				TEXT("source cap loop area %.9f px^2 is degenerate"),
+				OutDebug.SourceAreaPx2);
+			return false;
+		}
+		if (OutDebug.MinSourceEdgePx <= MinSourceEdgePx)
+		{
+			OutDebug.Reason = FString::Printf(
+				TEXT("source cap loop min edge %.9f px is degenerate"),
+				OutDebug.MinSourceEdgePx);
+			return false;
+		}
+		FindPolygonSelfIntersections2D(SourceLoop2D, OutDebug.SourceSelfIntersectionEdges);
+		if (OutDebug.SourceSelfIntersectionEdges.Num() > 0)
+		{
+			OutDebug.Reason = TEXT("source cap loop self-intersects before support-plane projection");
+			return false;
+		}
+
+		const FVector UnitU = AxisU.GetSafeNormal();
+		const FVector UnitV = AxisV.GetSafeNormal();
+		if (UnitU.IsNearlyZero() || UnitV.IsNearlyZero())
+		{
+			OutDebug.Reason = TEXT("virtual base plane topology basis is degenerate");
+			return false;
+		}
+
+		OutDebug.ProjectedUVLoop.Reset();
+		OutDebug.ProjectedUVLoop.Reserve(LoopWorld.Num());
+		for (const FVector& WorldPoint : LoopWorld)
+		{
+			if (!IsFiniteVector(WorldPoint))
+			{
+				OutDebug.Reason = TEXT("projected support-plane world loop contains a non-finite point");
+				return false;
+			}
+			const FVector Delta = WorldPoint - Origin;
+			const FVector2D UV(
+				FVector::DotProduct(Delta, UnitU),
+				FVector::DotProduct(Delta, UnitV));
+			if (!IsFiniteVector2D(UV))
+			{
+				OutDebug.Reason = TEXT("projected support-plane UV loop contains a non-finite point");
+				return false;
+			}
+			OutDebug.ProjectedUVLoop.Add(UV);
+		}
+
+		OutDebug.ProjectedAreaCm2 = FMath::Abs(PolygonArea2D(OutDebug.ProjectedUVLoop));
+		OutDebug.MinProjectedEdgeCm = MinClosedLoopEdgeLength2D(OutDebug.ProjectedUVLoop);
+		if (OutDebug.ProjectedAreaCm2 <= MinProjectedAreaCm2)
+		{
+			OutDebug.Reason = FString::Printf(
+				TEXT("support-plane projected cap area %.9f cm^2 is degenerate"),
+				OutDebug.ProjectedAreaCm2);
+			return false;
+		}
+		if (OutDebug.MinProjectedEdgeCm <= MinProjectedEdgeCm)
+		{
+			OutDebug.Reason = FString::Printf(
+				TEXT("support-plane projected cap min edge %.9f cm is degenerate"),
+				OutDebug.MinProjectedEdgeCm);
+			return false;
+		}
+		FindPolygonSelfIntersections2D(OutDebug.ProjectedUVLoop, OutDebug.ProjectedSelfIntersectionEdges);
+		if (OutDebug.ProjectedSelfIntersectionEdges.Num() > 0)
+		{
+			OutDebug.Reason = TEXT("support-plane projected cap self-intersects in virtual base UV");
+			return false;
+		}
+
+		OutDebug.bPass = true;
+		OutDebug.Reason = TEXT("passed");
+		return true;
+	}
+
 	static void ComputeBoundaryDistanceStats(
 		const TArray<FVector2D>& Samples,
 		const TArray<FVector2D>& Polygon,
@@ -4977,7 +6331,10 @@ namespace
 		double ScaleX,
 		double ScaleY,
 		TArray<FVector>& OutFinalCapWorld,
-		FCapBBoxRegularizationResult& OutDebug)
+		FCapBBoxRegularizationResult& OutDebug,
+		const FVector* OverrideAxisUWorld = nullptr,
+		const FVector* OverrideAxisVWorld = nullptr,
+		const TCHAR* OverrideFaceBoundarySource = nullptr)
 	{
 		OutDebug = FCapBBoxRegularizationResult();
 		OutDebug.bAttempted = true;
@@ -5006,7 +6363,21 @@ namespace
 
 		BeginWorldOrthogonalStage(OutDebug, TEXT("world_aligned_face_uv"));
 		int32 ExcludedWorldAxis = INDEX_NONE;
-		if (!BuildWorldAlignedFaceBasis(
+		if (OverrideAxisUWorld && OverrideAxisVWorld &&
+			!OverrideAxisUWorld->IsNearlyZero() &&
+			!OverrideAxisVWorld->IsNearlyZero())
+		{
+			OutDebug.FaceAxisUWorld = OverrideAxisUWorld->GetSafeNormal();
+			OutDebug.FaceAxisVWorld = OverrideAxisVWorld->GetSafeNormal();
+			if (FMath::Abs(FVector::DotProduct(OutDebug.FaceAxisUWorld, OutDebug.FaceAxisVWorld)) > 1e-3 ||
+				FMath::Abs(FVector::DotProduct(OutDebug.FaceAxisUWorld, Face.Normal.GetSafeNormal())) > 1e-3 ||
+				FMath::Abs(FVector::DotProduct(OutDebug.FaceAxisVWorld, Face.Normal.GetSafeNormal())) > 1e-3)
+			{
+				SetRegularizationFallback(OutDebug, TEXT("override face UV basis is not orthogonal to the virtual face normal"));
+				return false;
+			}
+		}
+		else if (!BuildWorldAlignedFaceBasis(
 			Face.Normal,
 			OutDebug.FaceAxisUWorld,
 			OutDebug.FaceAxisVWorld,
@@ -5024,8 +6395,8 @@ namespace
 				OutDebug.FaceAxisUWorld,
 				OutDebug.FaceAxisVWorld));
 		}
-		OutDebug.FaceBoundarySource = TEXT("shared_camera_legacy");
-		if (GFromLZUsePerFaceCapture != 0)
+		OutDebug.FaceBoundarySource = OverrideFaceBoundarySource ? OverrideFaceBoundarySource : TEXT("shared_camera_legacy");
+		if (!OverrideFaceBoundarySource && GFromLZUsePerFaceCapture != 0)
 		{
 			TArray<FVector2D> CleanBoundaryUV;
 			if (BuildPerFaceCleanBoundaryUV(
@@ -6386,7 +7757,8 @@ namespace
 		AccumulateUVBounds(Debug.CapMinimumBBoxUV, MinU, MaxU, MinV, MaxV);
 		AccumulateUVBounds(Debug.FinalCapUV, MinU, MaxU, MinV, MaxV);
 		if (!FMath::IsFinite(MinU) || !FMath::IsFinite(MaxU) ||
-			!FMath::IsFinite(MinV) || !FMath::IsFinite(MaxV))
+			!FMath::IsFinite(MinV) || !FMath::IsFinite(MaxV) ||
+			MinU > MaxU || MinV > MaxV)
 		{
 			DrawLineRGBA(
 				RGBA,
@@ -6527,9 +7899,26 @@ namespace
 		}
 		AccumulateUVBounds(Debug.WorldOrthogonalSolvedVerticesUV, MinU, MaxU, MinV, MaxV);
 		if (!FMath::IsFinite(MinU) || !FMath::IsFinite(MaxU) ||
-			!FMath::IsFinite(MinV) || !FMath::IsFinite(MaxV))
+			!FMath::IsFinite(MinV) || !FMath::IsFinite(MaxV) ||
+			MinU > MaxU || MinV > MaxV)
 		{
-			return false;
+			DrawLineRGBA(
+				RGBA,
+				Size,
+				Size,
+				FVector2D(160.0, 160.0),
+				FVector2D(double(Size - 160), double(Size - 160)),
+				FColor(220, 70, 70, 255),
+				6);
+			DrawLineRGBA(
+				RGBA,
+				Size,
+				Size,
+				FVector2D(double(Size - 160), 160.0),
+				FVector2D(160.0, double(Size - 160)),
+				FColor(220, 70, 70, 255),
+				6);
+			return SaveRGBAToPng(RGBA, Size, Size, Path);
 		}
 
 		const double PadU = FMath::Max((MaxU - MinU) * 0.08, 1e-3);
@@ -7273,6 +8662,9 @@ namespace
 		Root->SetBoolField(TEXT("success"), Result.bSuccess);
 		Root->SetStringField(TEXT("error"), Result.Error);
 		Root->SetStringField(TEXT("actor_name"), Result.ActorName);
+		Root->SetStringField(TEXT("attach_path_mode"), Result.AttachPathMode);
+		Root->SetStringField(TEXT("chosen_attach_path"), Result.ChosenAttachPath);
+		Root->SetStringField(TEXT("attach_path_selection_reason"), Result.AttachPathSelectionReason);
 		Root->SetNumberField(TEXT("cap_width"), Result.CapWidth);
 		Root->SetNumberField(TEXT("cap_height"), Result.CapHeight);
 		Root->SetNumberField(TEXT("faces_width"), Result.FacesWidth);
@@ -7288,8 +8680,9 @@ namespace
 			}
 			Root->SetArrayField(TEXT("green_line_vectors_2d"), GreenVectors);
 		}
-		Root->SetNumberField(TEXT("normal_parallel_threshold_degrees"), NormalParallelThresholdDegrees);
-		Root->SetNumberField(TEXT("preferred_normal_angle_threshold_degrees"), PreferredNormalAngleThresholdDegrees);
+		Root->SetNumberField(TEXT("overlap_ratio_threshold"), Result.CandidateFaceMinOverlapRatioUsed);
+		Root->SetNumberField(TEXT("normal_parallel_threshold_degrees"), Result.NormalParallelThresholdDegreesUsed);
+		Root->SetNumberField(TEXT("preferred_normal_angle_threshold_degrees"), Result.PreferredNormalAngleThresholdDegreesUsed);
 		Root->SetNumberField(TEXT("selected_face_id"), Result.SelectedFaceId);
 		Root->SetArrayField(TEXT("selected_plane_hit_3d"), JsonVector(Result.SelectedPlaneHit)->AsArray());
 
@@ -7327,6 +8720,804 @@ namespace
 		Root->SetArrayField(TEXT("mesh_triangles"), TriangleValues);
 
 		SaveJsonObject(Root, Path);
+	}
+
+	static int32 SupportForceableReasonPriority(const FString& Reason)
+	{
+		if (Reason.Contains(TEXT("no_penetration"), ESearchCase::IgnoreCase))
+		{
+			return 0;
+		}
+		if (Reason.Contains(TEXT("green_chord_below_preferred_length"), ESearchCase::IgnoreCase))
+		{
+			return 1;
+		}
+		return 10;
+	}
+
+	static int32 SelectBestForceableSupportAttemptIndex(const FAttachSupportPlaneFallbackDebug& Debug)
+	{
+		int32 BestIndex = INDEX_NONE;
+		int32 BestPriority = TNumericLimits<int32>::Max();
+		double BestViolation = TNumericLimits<double>::Max();
+		double BestReprojection = TNumericLimits<double>::Max();
+		double BestContact = TNumericLimits<double>::Max();
+		double BestNegativePathLength = TNumericLimits<double>::Max();
+		for (int32 AttemptIndex = 0; AttemptIndex < Debug.Attempts.Num(); ++AttemptIndex)
+		{
+			const FAttachSupportPlaneFallbackAttempt& Attempt = Debug.Attempts[AttemptIndex];
+			if (!Attempt.bForceable ||
+				Attempt.bSuccess ||
+				!Attempt.bHasBaseProjection ||
+				(!Attempt.RawProjectionTopology.bPass && !Attempt.FinalProjectionTopology.bPass) ||
+				Attempt.BaseLoopWorld.Num() < 3 ||
+				Attempt.BaseLoop2D.Num() != Attempt.BaseLoopWorld.Num() ||
+				Attempt.ExtrusionVectorWorld.IsNearlyZero())
+			{
+				continue;
+			}
+
+			const int32 Priority = SupportForceableReasonPriority(Attempt.ForceableReason);
+			const double Violation = FMath::IsFinite(Attempt.MaxNoPenetrationViolationCm)
+				? Attempt.MaxNoPenetrationViolationCm
+				: TNumericLimits<double>::Max();
+			const double Reprojection = FMath::IsFinite(Attempt.MaxReprojectionErrorPixels)
+				? Attempt.MaxReprojectionErrorPixels
+				: TNumericLimits<double>::Max();
+			const double Contact = FMath::IsFinite(Attempt.ContactDistancePixels)
+				? Attempt.ContactDistancePixels
+				: TNumericLimits<double>::Max();
+			const double NegativePathLength = -Attempt.ChainPathLength;
+			const bool bBetter =
+				BestIndex == INDEX_NONE ||
+				Priority < BestPriority ||
+				(Priority == BestPriority && Violation < BestViolation - 1e-6) ||
+				(Priority == BestPriority && FMath::IsNearlyEqual(Violation, BestViolation, 1e-6) &&
+					Reprojection < BestReprojection - 1e-6) ||
+				(Priority == BestPriority && FMath::IsNearlyEqual(Violation, BestViolation, 1e-6) &&
+					FMath::IsNearlyEqual(Reprojection, BestReprojection, 1e-6) &&
+					Contact < BestContact - 1e-6) ||
+				(Priority == BestPriority && FMath::IsNearlyEqual(Violation, BestViolation, 1e-6) &&
+					FMath::IsNearlyEqual(Reprojection, BestReprojection, 1e-6) &&
+					FMath::IsNearlyEqual(Contact, BestContact, 1e-6) &&
+					NegativePathLength < BestNegativePathLength);
+			if (bBetter)
+			{
+				BestIndex = AttemptIndex;
+				BestPriority = Priority;
+				BestViolation = Violation;
+				BestReprojection = Reprojection;
+				BestContact = Contact;
+				BestNegativePathLength = NegativePathLength;
+			}
+		}
+		return BestIndex;
+	}
+
+	static void DrawTopologyIntersectionEdgesRGBA(
+		TArray<uint8>& RGBA,
+		int32 Width,
+		int32 Height,
+		const TArray<FVector2D>& Loop2D,
+		const FSupportPlaneTopologyDebug& Topology,
+		const FColor& Color,
+		int32 Radius)
+	{
+		if (Loop2D.Num() < 2)
+		{
+			return;
+		}
+		auto DrawEdge = [&](int32 EdgeIndex)
+		{
+			if (!Loop2D.IsValidIndex(EdgeIndex))
+			{
+				return;
+			}
+			const int32 Next = (EdgeIndex + 1) % Loop2D.Num();
+			if (Loop2D.IsValidIndex(Next))
+			{
+				DrawLineRGBA(RGBA, Width, Height, Loop2D[EdgeIndex], Loop2D[Next], Color, Radius);
+			}
+		};
+		for (const FIntPoint& Pair : Topology.SourceSelfIntersectionEdges)
+		{
+			DrawEdge(Pair.X);
+			DrawEdge(Pair.Y);
+		}
+		for (const FIntPoint& Pair : Topology.ProjectedSelfIntersectionEdges)
+		{
+			DrawEdge(Pair.X);
+			DrawEdge(Pair.Y);
+		}
+	}
+
+	static void SaveAttachSupportPlaneFallbackDebug(
+		const FAttachSupportPlaneFallbackDebug& Debug,
+		const FCommonInputs& Inputs,
+		const TArray<FVector2D>& RawCapLoopFaceSpace,
+		const FString& JsonPath,
+		const FString& PngPath)
+	{
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetBoolField(TEXT("attempted"), Debug.bAttempted);
+		Root->SetBoolField(TEXT("enabled"), Debug.bEnabled);
+		Root->SetBoolField(TEXT("success"), Debug.bSuccess);
+		Root->SetStringField(TEXT("error"), Debug.Error);
+		Root->SetNumberField(TEXT("support_face_vote_min_coverage"), Debug.SupportFaceVoteMinCoverage);
+		Root->SetNumberField(TEXT("support_face_vote_sample_step_px"), Debug.SupportFaceVoteSampleStepPx);
+		Root->SetBoolField(TEXT("support_plane_polygon_check_enforced"), false);
+		const int32 BestForceableAttemptIndex = Debug.BestForceableAttemptIndex != INDEX_NONE
+			? Debug.BestForceableAttemptIndex
+			: SelectBestForceableSupportAttemptIndex(Debug);
+		int32 BestFailedAttemptIndex = INDEX_NONE;
+		double BestFailedViolation = TNumericLimits<double>::Max();
+		for (int32 AttemptIndex = 0; AttemptIndex < Debug.Attempts.Num(); ++AttemptIndex)
+		{
+			const FAttachSupportPlaneFallbackAttempt& Attempt = Debug.Attempts[AttemptIndex];
+			if (Attempt.bSuccess ||
+				!Attempt.bHasBaseProjection ||
+				Attempt.NoPenetrationViolationCm.Num() == 0 ||
+				!FMath::IsFinite(Attempt.MaxNoPenetrationViolationCm))
+			{
+				continue;
+			}
+			if (Attempt.MaxNoPenetrationViolationCm < BestFailedViolation)
+			{
+				BestFailedViolation = Attempt.MaxNoPenetrationViolationCm;
+				BestFailedAttemptIndex = AttemptIndex;
+			}
+		}
+		Root->SetNumberField(TEXT("best_failed_attempt_index"), BestFailedAttemptIndex);
+		Root->SetNumberField(TEXT("best_failed_debug_attempt_index"), BestFailedAttemptIndex);
+		Root->SetNumberField(
+			TEXT("best_failed_max_no_penetration_violation_cm"),
+			BestFailedAttemptIndex >= 0 ? BestFailedViolation : 0.0);
+		Root->SetNumberField(TEXT("best_forceable_attempt_index"), BestForceableAttemptIndex);
+		Root->SetStringField(
+			TEXT("best_forceable_reason"),
+			Debug.Attempts.IsValidIndex(BestForceableAttemptIndex)
+				? Debug.Attempts[BestForceableAttemptIndex].ForceableReason
+				: Debug.BestForceableReason);
+		Root->SetBoolField(TEXT("forced_support_plane_output"), Debug.bForcedOutput);
+		Root->SetNumberField(TEXT("forced_attempt_index"), Debug.ForcedAttemptIndex);
+		Root->SetStringField(TEXT("forced_reason"), Debug.ForcedReason);
+
+		TArray<TSharedPtr<FJsonValue>> AttemptValues;
+		for (int32 AttemptIndex = 0; AttemptIndex < Debug.Attempts.Num(); ++AttemptIndex)
+		{
+			const FAttachSupportPlaneFallbackAttempt& Attempt = Debug.Attempts[AttemptIndex];
+			TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+			Obj->SetNumberField(TEXT("chain_index"), Attempt.ChainIndex);
+			Obj->SetNumberField(TEXT("seed_stroke_id"), Attempt.SeedStrokeId);
+			Obj->SetNumberField(TEXT("support_face_id"), Attempt.SupportFaceId);
+			Obj->SetBoolField(TEXT("success"), Attempt.bSuccess);
+			Obj->SetBoolField(TEXT("best_failed_debug_attempt"), AttemptIndex == BestFailedAttemptIndex);
+			Obj->SetBoolField(TEXT("best_forceable_attempt"), AttemptIndex == BestForceableAttemptIndex);
+			Obj->SetBoolField(TEXT("forceable"), Attempt.bForceable);
+			Obj->SetStringField(TEXT("forceable_reason"), Attempt.ForceableReason);
+			Obj->SetStringField(TEXT("reject_reason"), Attempt.RejectReason);
+			Obj->SetArrayField(TEXT("chain_start_face_space"), JsonVector2D(Attempt.ChainStartFaceSpace)->AsArray());
+			Obj->SetArrayField(TEXT("chain_end_face_space"), JsonVector2D(Attempt.ChainEndFaceSpace)->AsArray());
+			Obj->SetNumberField(TEXT("chain_path_length"), Attempt.ChainPathLength);
+			Obj->SetNumberField(TEXT("chain_chord_length"), Attempt.ChainChordLength);
+			SetSupportFaceVoteAttemptDebugFields(
+				Obj,
+				Attempt.SupportVotePixels,
+				Attempt.SupportConsideredPixels,
+				Attempt.SupportHitSampleCount,
+				Attempt.SupportTotalSampleCount,
+				Attempt.SupportVoteCoverage,
+				Attempt.SupportVotePixelCoverage,
+				Attempt.SupportFaceWorldZMax,
+				Attempt.SupportFaceWorldZAverage,
+				Attempt.SupportMinCameraDistance,
+				Attempt.SupportWorstPolygonDistancePx,
+				Attempt.SupportFaceCandidates);
+			Obj->SetArrayField(TEXT("anchor_world"), JsonVector(Attempt.AnchorWorld)->AsArray());
+			Obj->SetArrayField(TEXT("chain_end_world"), JsonVector(Attempt.ChainEndWorld)->AsArray());
+			Obj->SetArrayField(TEXT("extrusion_vector_world"), JsonVector(Attempt.ExtrusionVectorWorld)->AsArray());
+			Obj->SetArrayField(TEXT("base_plane_normal"), JsonVector(Attempt.BasePlaneNormal)->AsArray());
+			Obj->SetArrayField(TEXT("support_plane_normal"), JsonVector(Attempt.SupportPlaneNormal)->AsArray());
+			Obj->SetArrayField(TEXT("support_aware_axis_u"), JsonVector(Attempt.SupportAwareAxisU)->AsArray());
+			Obj->SetArrayField(TEXT("support_aware_axis_v"), JsonVector(Attempt.SupportAwareAxisV)->AsArray());
+			Obj->SetBoolField(TEXT("has_base_projection"), Attempt.bHasBaseProjection);
+			SetVector2DArrayField(Obj, TEXT("base_loop_2d"), Attempt.BaseLoop2D);
+			SetVector2DArrayField(Obj, TEXT("copied_target_loop_2d"), Attempt.CopiedTargetLoop2D);
+			SetVector2DArrayField(Obj, TEXT("reprojected_base_loop_2d"), Attempt.ReprojectedBaseLoop2D);
+			SetVector2DArrayField(Obj, TEXT("reprojected_copied_loop_2d"), Attempt.ReprojectedCopiedLoop2D);
+			SetVector2DArrayField(Obj, TEXT("virtual_base_plane_quad_2d"), Attempt.VirtualBasePlaneQuad2D);
+			SetVectorArrayField(Obj, TEXT("base_loop_world"), Attempt.BaseLoopWorld);
+			SetVectorArrayField(Obj, TEXT("copied_loop_world"), Attempt.CopiedLoopWorld);
+			SetVectorArrayField(Obj, TEXT("virtual_base_plane_quad_world"), Attempt.VirtualBasePlaneQuadWorld);
+			Obj->SetObjectField(TEXT("raw_projection_topology"), MakeSupportTopologyDebugJson(Attempt.RawProjectionTopology));
+			Obj->SetObjectField(TEXT("regularized_projection_topology"), MakeSupportTopologyDebugJson(Attempt.RegularizedProjectionTopology));
+			Obj->SetObjectField(TEXT("final_projection_topology"), MakeSupportTopologyDebugJson(Attempt.FinalProjectionTopology));
+			SetVector2DArrayField(Obj, TEXT("no_penetration_sample_pixels"), Attempt.NoPenetrationSamplePixels);
+			SetVectorArrayField(Obj, TEXT("no_penetration_base_world"), Attempt.NoPenetrationBaseWorld);
+			SetVectorArrayField(Obj, TEXT("no_penetration_support_world"), Attempt.NoPenetrationSupportWorld);
+			SetDoubleArrayField(Obj, TEXT("no_penetration_violation_cm"), Attempt.NoPenetrationViolationCm);
+			Obj->SetBoolField(TEXT("orthogonal_attempted"), Attempt.bOrthogonalAttempted);
+			Obj->SetBoolField(TEXT("orthogonal_applied"), Attempt.bOrthogonalApplied);
+			Obj->SetBoolField(TEXT("orthogonal_fallback_to_original"), Attempt.bOrthogonalFallbackToOriginal);
+			Obj->SetNumberField(TEXT("contact_distance_pixels"), Attempt.ContactDistancePixels);
+			Obj->SetBoolField(TEXT("contact_pass"), Attempt.bContactPass);
+			Obj->SetNumberField(TEXT("max_no_penetration_violation_cm"), Attempt.MaxNoPenetrationViolationCm);
+			Obj->SetBoolField(TEXT("no_penetration_pass"), Attempt.bNoPenetrationPass);
+			Obj->SetNumberField(TEXT("max_reprojection_error_pixels"), Attempt.MaxReprojectionErrorPixels);
+			Obj->SetBoolField(TEXT("reprojection_pass"), Attempt.bReprojectionPass);
+			AttemptValues.Add(MakeShared<FJsonValueObject>(Obj));
+		}
+		Root->SetArrayField(TEXT("attempts"), AttemptValues);
+		SaveJsonObject(Root, JsonPath);
+
+		if (Inputs.FacesRGBA.Num() >= Inputs.FacesWidth * Inputs.FacesHeight * 4)
+		{
+			TArray<uint8> RGBA = Inputs.FacesRGBA;
+			DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, RawCapLoopFaceSpace, FColor(255, 255, 255, 255), 2);
+			for (const FAttachSupportPlaneFallbackAttempt& Attempt : Debug.Attempts)
+			{
+				const FColor ChainColor = Attempt.bSuccess
+					? FColor(40, 240, 80, 255)
+					: (Attempt.SupportFaceId >= 0 ? FColor(255, 205, 30, 255) : FColor(230, 30, 50, 255));
+				DrawArrowRGBA(
+					RGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					Attempt.ChainStartFaceSpace,
+					Attempt.ChainEndFaceSpace,
+					ChainColor,
+					2);
+				DrawPointRGBA(
+					RGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					FMath::RoundToInt(Attempt.ChainStartFaceSpace.X),
+					FMath::RoundToInt(Attempt.ChainStartFaceSpace.Y),
+					FColor(0, 255, 80, 255),
+					3);
+			}
+			if (Debug.Attempts.IsValidIndex(BestFailedAttemptIndex))
+			{
+				const FAttachSupportPlaneFallbackAttempt& Best = Debug.Attempts[BestFailedAttemptIndex];
+				DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.VirtualBasePlaneQuad2D, FColor(0, 230, 255, 255), 3);
+				DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, FColor(0, 180, 255, 255), 3);
+				DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.CopiedTargetLoop2D, FColor(255, 140, 0, 255), 2);
+				DrawTopologyIntersectionEdgesRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, Best.RawProjectionTopology, FColor(255, 0, 0, 255), 5);
+				DrawTopologyIntersectionEdgesRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, Best.FinalProjectionTopology, FColor(255, 0, 0, 255), 5);
+				for (int32 SampleIndex = 0; SampleIndex < Best.NoPenetrationSamplePixels.Num(); ++SampleIndex)
+				{
+					const double Violation = Best.NoPenetrationViolationCm.IsValidIndex(SampleIndex)
+						? Best.NoPenetrationViolationCm[SampleIndex]
+						: 0.0;
+					const FColor SampleColor = Violation > 0.0
+						? FColor(255, 40, 40, 255)
+						: FColor(40, 240, 80, 255);
+					DrawPointRGBA(
+						RGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						FMath::RoundToInt(Best.NoPenetrationSamplePixels[SampleIndex].X),
+						FMath::RoundToInt(Best.NoPenetrationSamplePixels[SampleIndex].Y),
+						SampleColor,
+						4);
+				}
+			}
+			SaveRGBAToPng(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, PngPath);
+
+			const FString AttemptDebugDir =
+				FPaths::GetPath(PngPath) / TEXT("10_attach_support_plane_fallback_attempts");
+			IFileManager::Get().MakeDirectory(*AttemptDebugDir, true);
+			TArray<TSharedPtr<FJsonValue>> AttemptIndexValues;
+			for (int32 AttemptIndex = 0; AttemptIndex < Debug.Attempts.Num(); ++AttemptIndex)
+			{
+				const FAttachSupportPlaneFallbackAttempt& Attempt = Debug.Attempts[AttemptIndex];
+				const FString AttemptBaseName = FString::Printf(
+					TEXT("attempt_%03d_chain_%03d"),
+					AttemptIndex,
+					Attempt.ChainIndex);
+				const FString AttemptPngPath = AttemptDebugDir / (AttemptBaseName + TEXT(".png"));
+				const FString AttemptJsonPath = AttemptDebugDir / (AttemptBaseName + TEXT(".json"));
+
+				TArray<uint8> AttemptRGBA = Inputs.FacesRGBA;
+				DrawClosedPolylineRGBA(
+					AttemptRGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					RawCapLoopFaceSpace,
+					FColor(255, 255, 255, 255),
+					2);
+				if (const int32* SupportIndex = Inputs.FaceIndexById.Find(Attempt.SupportFaceId))
+				{
+					if (Inputs.Faces.IsValidIndex(*SupportIndex))
+					{
+						DrawClosedPolylineRGBA(
+							AttemptRGBA,
+							Inputs.FacesWidth,
+							Inputs.FacesHeight,
+							Inputs.Faces[*SupportIndex].KeyPoints2D,
+							FColor(80, 80, 80, 255),
+							2);
+					}
+				}
+
+				if (Attempt.VirtualBasePlaneQuad2D.Num() >= 3)
+				{
+					DrawClosedPolylineRGBA(
+						AttemptRGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						Attempt.VirtualBasePlaneQuad2D,
+						FColor(0, 230, 255, 255),
+						4);
+				}
+				if (Attempt.BaseLoop2D.Num() >= 3)
+				{
+					DrawClosedPolylineRGBA(
+						AttemptRGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						Attempt.BaseLoop2D,
+						FColor(0, 180, 255, 255),
+						3);
+				}
+				if (Attempt.ReprojectedBaseLoop2D.Num() >= 3)
+				{
+					DrawClosedPolylineRGBA(
+						AttemptRGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						Attempt.ReprojectedBaseLoop2D,
+						FColor(40, 240, 80, 255),
+						2);
+				}
+				if (Attempt.CopiedTargetLoop2D.Num() >= 3)
+				{
+					DrawClosedPolylineRGBA(
+						AttemptRGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						Attempt.CopiedTargetLoop2D,
+						FColor(255, 140, 0, 255),
+						2);
+				}
+				if (Attempt.ReprojectedCopiedLoop2D.Num() >= 3)
+				{
+					DrawClosedPolylineRGBA(
+						AttemptRGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						Attempt.ReprojectedCopiedLoop2D,
+						FColor(255, 0, 180, 255),
+						2);
+				}
+				DrawTopologyIntersectionEdgesRGBA(
+					AttemptRGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					Attempt.BaseLoop2D,
+					Attempt.RawProjectionTopology,
+					FColor(255, 0, 0, 255),
+					5);
+				DrawTopologyIntersectionEdgesRGBA(
+					AttemptRGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					Attempt.BaseLoop2D,
+					Attempt.FinalProjectionTopology,
+					FColor(255, 0, 0, 255),
+					5);
+
+				const FColor ChainColor = Attempt.bSuccess
+					? FColor(40, 240, 80, 255)
+					: (Attempt.SupportFaceId >= 0 ? FColor(255, 225, 40, 255) : FColor(230, 30, 50, 255));
+				DrawArrowRGBA(
+					AttemptRGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					Attempt.ChainStartFaceSpace,
+					Attempt.ChainEndFaceSpace,
+					ChainColor,
+					3);
+				DrawPointRGBA(
+					AttemptRGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					FMath::RoundToInt(Attempt.ChainStartFaceSpace.X),
+					FMath::RoundToInt(Attempt.ChainStartFaceSpace.Y),
+					FColor(255, 0, 0, 255),
+					5);
+
+				for (int32 SampleIndex = 0; SampleIndex < Attempt.NoPenetrationSamplePixels.Num(); ++SampleIndex)
+				{
+					const double Violation = Attempt.NoPenetrationViolationCm.IsValidIndex(SampleIndex)
+						? Attempt.NoPenetrationViolationCm[SampleIndex]
+						: 0.0;
+					const FColor SampleColor = Violation > 0.0
+						? FColor(255, 40, 40, 255)
+						: FColor(40, 240, 80, 255);
+					DrawPointRGBA(
+						AttemptRGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						FMath::RoundToInt(Attempt.NoPenetrationSamplePixels[SampleIndex].X),
+						FMath::RoundToInt(Attempt.NoPenetrationSamplePixels[SampleIndex].Y),
+						SampleColor,
+						5);
+				}
+				SaveRGBAToPng(AttemptRGBA, Inputs.FacesWidth, Inputs.FacesHeight, AttemptPngPath);
+
+				TSharedRef<FJsonObject> AttemptRoot = MakeShared<FJsonObject>();
+				AttemptRoot->SetNumberField(TEXT("attempt_index"), AttemptIndex);
+				AttemptRoot->SetNumberField(TEXT("chain_index"), Attempt.ChainIndex);
+				AttemptRoot->SetNumberField(TEXT("seed_stroke_id"), Attempt.SeedStrokeId);
+				AttemptRoot->SetNumberField(TEXT("support_face_id"), Attempt.SupportFaceId);
+				AttemptRoot->SetBoolField(TEXT("success"), Attempt.bSuccess);
+				AttemptRoot->SetBoolField(TEXT("best_failed_debug_attempt"), AttemptIndex == BestFailedAttemptIndex);
+				AttemptRoot->SetBoolField(TEXT("best_forceable_attempt"), AttemptIndex == BestForceableAttemptIndex);
+				AttemptRoot->SetBoolField(TEXT("forceable"), Attempt.bForceable);
+				AttemptRoot->SetStringField(TEXT("forceable_reason"), Attempt.ForceableReason);
+				AttemptRoot->SetStringField(TEXT("reject_reason"), Attempt.RejectReason);
+				AttemptRoot->SetArrayField(TEXT("chain_start_face_space"), JsonVector2D(Attempt.ChainStartFaceSpace)->AsArray());
+				AttemptRoot->SetArrayField(TEXT("chain_end_face_space"), JsonVector2D(Attempt.ChainEndFaceSpace)->AsArray());
+				AttemptRoot->SetNumberField(TEXT("chain_path_length"), Attempt.ChainPathLength);
+				AttemptRoot->SetNumberField(TEXT("chain_chord_length"), Attempt.ChainChordLength);
+				SetSupportFaceVoteAttemptDebugFields(
+					AttemptRoot,
+					Attempt.SupportVotePixels,
+					Attempt.SupportConsideredPixels,
+					Attempt.SupportHitSampleCount,
+					Attempt.SupportTotalSampleCount,
+					Attempt.SupportVoteCoverage,
+					Attempt.SupportVotePixelCoverage,
+					Attempt.SupportFaceWorldZMax,
+					Attempt.SupportFaceWorldZAverage,
+					Attempt.SupportMinCameraDistance,
+					Attempt.SupportWorstPolygonDistancePx,
+					Attempt.SupportFaceCandidates);
+				AttemptRoot->SetArrayField(TEXT("anchor_world"), JsonVector(Attempt.AnchorWorld)->AsArray());
+				AttemptRoot->SetArrayField(TEXT("chain_end_world"), JsonVector(Attempt.ChainEndWorld)->AsArray());
+				AttemptRoot->SetArrayField(TEXT("extrusion_vector_world"), JsonVector(Attempt.ExtrusionVectorWorld)->AsArray());
+				AttemptRoot->SetArrayField(TEXT("base_plane_normal"), JsonVector(Attempt.BasePlaneNormal)->AsArray());
+				AttemptRoot->SetArrayField(TEXT("support_plane_normal"), JsonVector(Attempt.SupportPlaneNormal)->AsArray());
+				AttemptRoot->SetArrayField(TEXT("support_aware_axis_u"), JsonVector(Attempt.SupportAwareAxisU)->AsArray());
+				AttemptRoot->SetArrayField(TEXT("support_aware_axis_v"), JsonVector(Attempt.SupportAwareAxisV)->AsArray());
+				AttemptRoot->SetBoolField(TEXT("has_base_projection"), Attempt.bHasBaseProjection);
+				SetVector2DArrayField(AttemptRoot, TEXT("base_loop_2d"), Attempt.BaseLoop2D);
+				SetVector2DArrayField(AttemptRoot, TEXT("copied_target_loop_2d"), Attempt.CopiedTargetLoop2D);
+				SetVector2DArrayField(AttemptRoot, TEXT("reprojected_base_loop_2d"), Attempt.ReprojectedBaseLoop2D);
+				SetVector2DArrayField(AttemptRoot, TEXT("reprojected_copied_loop_2d"), Attempt.ReprojectedCopiedLoop2D);
+				SetVector2DArrayField(AttemptRoot, TEXT("virtual_base_plane_quad_2d"), Attempt.VirtualBasePlaneQuad2D);
+				SetVectorArrayField(AttemptRoot, TEXT("base_loop_world"), Attempt.BaseLoopWorld);
+				SetVectorArrayField(AttemptRoot, TEXT("copied_loop_world"), Attempt.CopiedLoopWorld);
+				SetVectorArrayField(AttemptRoot, TEXT("virtual_base_plane_quad_world"), Attempt.VirtualBasePlaneQuadWorld);
+				AttemptRoot->SetObjectField(TEXT("raw_projection_topology"), MakeSupportTopologyDebugJson(Attempt.RawProjectionTopology));
+				AttemptRoot->SetObjectField(TEXT("regularized_projection_topology"), MakeSupportTopologyDebugJson(Attempt.RegularizedProjectionTopology));
+				AttemptRoot->SetObjectField(TEXT("final_projection_topology"), MakeSupportTopologyDebugJson(Attempt.FinalProjectionTopology));
+				SetVector2DArrayField(AttemptRoot, TEXT("no_penetration_sample_pixels"), Attempt.NoPenetrationSamplePixels);
+				SetVectorArrayField(AttemptRoot, TEXT("no_penetration_base_world"), Attempt.NoPenetrationBaseWorld);
+				SetVectorArrayField(AttemptRoot, TEXT("no_penetration_support_world"), Attempt.NoPenetrationSupportWorld);
+				SetDoubleArrayField(AttemptRoot, TEXT("no_penetration_violation_cm"), Attempt.NoPenetrationViolationCm);
+				AttemptRoot->SetBoolField(TEXT("orthogonal_attempted"), Attempt.bOrthogonalAttempted);
+				AttemptRoot->SetBoolField(TEXT("orthogonal_applied"), Attempt.bOrthogonalApplied);
+				AttemptRoot->SetBoolField(TEXT("orthogonal_fallback_to_original"), Attempt.bOrthogonalFallbackToOriginal);
+				AttemptRoot->SetNumberField(TEXT("contact_distance_pixels"), Attempt.ContactDistancePixels);
+				AttemptRoot->SetBoolField(TEXT("contact_pass"), Attempt.bContactPass);
+				AttemptRoot->SetNumberField(TEXT("max_no_penetration_violation_cm"), Attempt.MaxNoPenetrationViolationCm);
+				AttemptRoot->SetBoolField(TEXT("no_penetration_pass"), Attempt.bNoPenetrationPass);
+				AttemptRoot->SetNumberField(TEXT("max_reprojection_error_pixels"), Attempt.MaxReprojectionErrorPixels);
+				AttemptRoot->SetBoolField(TEXT("reprojection_pass"), Attempt.bReprojectionPass);
+				SaveJsonObject(AttemptRoot, AttemptJsonPath);
+
+				TSharedRef<FJsonObject> IndexObj = MakeShared<FJsonObject>();
+				IndexObj->SetNumberField(TEXT("attempt_index"), AttemptIndex);
+				IndexObj->SetNumberField(TEXT("chain_index"), Attempt.ChainIndex);
+				IndexObj->SetNumberField(TEXT("support_face_id"), Attempt.SupportFaceId);
+				IndexObj->SetNumberField(TEXT("support_sample_coverage"), Attempt.SupportVoteCoverage);
+				IndexObj->SetNumberField(TEXT("support_hit_sample_count"), Attempt.SupportHitSampleCount);
+				IndexObj->SetNumberField(TEXT("support_total_sample_count"), Attempt.SupportTotalSampleCount);
+				IndexObj->SetNumberField(TEXT("support_face_world_z_max"), Attempt.SupportFaceWorldZMax);
+				IndexObj->SetNumberField(TEXT("support_min_camera_distance"), Attempt.SupportMinCameraDistance);
+				IndexObj->SetBoolField(TEXT("success"), Attempt.bSuccess);
+				IndexObj->SetBoolField(TEXT("best_failed_debug_attempt"), AttemptIndex == BestFailedAttemptIndex);
+				IndexObj->SetBoolField(TEXT("best_forceable_attempt"), AttemptIndex == BestForceableAttemptIndex);
+				IndexObj->SetBoolField(TEXT("forceable"), Attempt.bForceable);
+				IndexObj->SetStringField(TEXT("forceable_reason"), Attempt.ForceableReason);
+				IndexObj->SetBoolField(TEXT("raw_projection_topology_checked"), Attempt.RawProjectionTopology.bChecked);
+				IndexObj->SetBoolField(TEXT("raw_projection_topology_pass"), Attempt.RawProjectionTopology.bPass);
+				IndexObj->SetStringField(TEXT("raw_projection_topology_reason"), Attempt.RawProjectionTopology.Reason);
+				IndexObj->SetBoolField(TEXT("regularized_projection_topology_checked"), Attempt.RegularizedProjectionTopology.bChecked);
+				IndexObj->SetBoolField(TEXT("regularized_projection_topology_pass"), Attempt.RegularizedProjectionTopology.bPass);
+				IndexObj->SetStringField(TEXT("regularized_projection_topology_reason"), Attempt.RegularizedProjectionTopology.Reason);
+				IndexObj->SetBoolField(TEXT("final_projection_topology_checked"), Attempt.FinalProjectionTopology.bChecked);
+				IndexObj->SetBoolField(TEXT("final_projection_topology_pass"), Attempt.FinalProjectionTopology.bPass);
+				IndexObj->SetStringField(TEXT("final_projection_topology_reason"), Attempt.FinalProjectionTopology.Reason);
+				IndexObj->SetStringField(TEXT("reject_reason"), Attempt.RejectReason);
+				IndexObj->SetStringField(TEXT("png"), AttemptBaseName + TEXT(".png"));
+				IndexObj->SetStringField(TEXT("json"), AttemptBaseName + TEXT(".json"));
+				AttemptIndexValues.Add(MakeShared<FJsonValueObject>(IndexObj));
+			}
+			TSharedRef<FJsonObject> AttemptsIndexRoot = MakeShared<FJsonObject>();
+			AttemptsIndexRoot->SetNumberField(TEXT("attempt_count"), Debug.Attempts.Num());
+			AttemptsIndexRoot->SetBoolField(TEXT("success"), Debug.bSuccess);
+			AttemptsIndexRoot->SetNumberField(TEXT("best_failed_attempt_index"), BestFailedAttemptIndex);
+			AttemptsIndexRoot->SetNumberField(TEXT("best_failed_debug_attempt_index"), BestFailedAttemptIndex);
+			AttemptsIndexRoot->SetNumberField(TEXT("best_forceable_attempt_index"), BestForceableAttemptIndex);
+			AttemptsIndexRoot->SetStringField(
+				TEXT("best_forceable_reason"),
+				Debug.Attempts.IsValidIndex(BestForceableAttemptIndex)
+					? Debug.Attempts[BestForceableAttemptIndex].ForceableReason
+					: Debug.BestForceableReason);
+			AttemptsIndexRoot->SetBoolField(TEXT("forced_support_plane_output"), Debug.bForcedOutput);
+			AttemptsIndexRoot->SetNumberField(TEXT("forced_attempt_index"), Debug.ForcedAttemptIndex);
+			AttemptsIndexRoot->SetStringField(TEXT("forced_reason"), Debug.ForcedReason);
+			AttemptsIndexRoot->SetArrayField(TEXT("attempts"), AttemptIndexValues);
+			SaveJsonObject(AttemptsIndexRoot, AttemptDebugDir / TEXT("index.json"));
+
+			if (Debug.Attempts.IsValidIndex(BestFailedAttemptIndex))
+			{
+				const FAttachSupportPlaneFallbackAttempt& Best = Debug.Attempts[BestFailedAttemptIndex];
+				TArray<uint8> BestRGBA = Inputs.FacesRGBA;
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, RawCapLoopFaceSpace, FColor(255, 255, 255, 255), 2);
+				if (const int32* SupportIndex = Inputs.FaceIndexById.Find(Best.SupportFaceId))
+				{
+					if (Inputs.Faces.IsValidIndex(*SupportIndex))
+					{
+						DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Inputs.Faces[*SupportIndex].KeyPoints2D, FColor(80, 80, 80, 255), 2);
+					}
+				}
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.VirtualBasePlaneQuad2D, FColor(0, 230, 255, 255), 4);
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, FColor(0, 180, 255, 255), 3);
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.ReprojectedBaseLoop2D, FColor(40, 240, 80, 255), 2);
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.CopiedTargetLoop2D, FColor(255, 140, 0, 255), 2);
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.ReprojectedCopiedLoop2D, FColor(255, 0, 180, 255), 2);
+				DrawTopologyIntersectionEdgesRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, Best.RawProjectionTopology, FColor(255, 0, 0, 255), 5);
+				DrawTopologyIntersectionEdgesRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, Best.FinalProjectionTopology, FColor(255, 0, 0, 255), 5);
+				DrawArrowRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.ChainStartFaceSpace, Best.ChainEndFaceSpace, FColor(255, 225, 40, 255), 3);
+				for (int32 SampleIndex = 0; SampleIndex < Best.NoPenetrationSamplePixels.Num(); ++SampleIndex)
+				{
+					const double Violation = Best.NoPenetrationViolationCm.IsValidIndex(SampleIndex)
+						? Best.NoPenetrationViolationCm[SampleIndex]
+						: 0.0;
+					const FColor SampleColor = Violation > 0.0
+						? FColor(255, 40, 40, 255)
+						: FColor(40, 240, 80, 255);
+					DrawPointRGBA(
+						BestRGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						FMath::RoundToInt(Best.NoPenetrationSamplePixels[SampleIndex].X),
+						FMath::RoundToInt(Best.NoPenetrationSamplePixels[SampleIndex].Y),
+						SampleColor,
+						5);
+				}
+				SaveRGBAToPng(
+					BestRGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					FPaths::GetPath(PngPath) / TEXT("10_attach_support_plane_fallback_best_failed.png"));
+
+				TSharedRef<FJsonObject> BestRoot = MakeShared<FJsonObject>();
+				BestRoot->SetNumberField(TEXT("best_failed_attempt_index"), BestFailedAttemptIndex);
+				BestRoot->SetNumberField(TEXT("chain_index"), Best.ChainIndex);
+				BestRoot->SetNumberField(TEXT("support_face_id"), Best.SupportFaceId);
+				BestRoot->SetStringField(TEXT("reject_reason"), Best.RejectReason);
+				BestRoot->SetNumberField(TEXT("max_no_penetration_violation_cm"), Best.MaxNoPenetrationViolationCm);
+				BestRoot->SetArrayField(TEXT("anchor_world"), JsonVector(Best.AnchorWorld)->AsArray());
+				BestRoot->SetArrayField(TEXT("chain_end_world"), JsonVector(Best.ChainEndWorld)->AsArray());
+				BestRoot->SetArrayField(TEXT("base_plane_normal"), JsonVector(Best.BasePlaneNormal)->AsArray());
+				BestRoot->SetArrayField(TEXT("support_plane_normal"), JsonVector(Best.SupportPlaneNormal)->AsArray());
+				BestRoot->SetArrayField(TEXT("support_aware_axis_u"), JsonVector(Best.SupportAwareAxisU)->AsArray());
+				BestRoot->SetArrayField(TEXT("support_aware_axis_v"), JsonVector(Best.SupportAwareAxisV)->AsArray());
+				SetVector2DArrayField(BestRoot, TEXT("virtual_base_plane_quad_2d"), Best.VirtualBasePlaneQuad2D);
+				SetVectorArrayField(BestRoot, TEXT("virtual_base_plane_quad_world"), Best.VirtualBasePlaneQuadWorld);
+				SetVector2DArrayField(BestRoot, TEXT("base_loop_2d"), Best.BaseLoop2D);
+				SetVectorArrayField(BestRoot, TEXT("base_loop_world"), Best.BaseLoopWorld);
+				SetVector2DArrayField(BestRoot, TEXT("copied_target_loop_2d"), Best.CopiedTargetLoop2D);
+				SetVectorArrayField(BestRoot, TEXT("copied_loop_world"), Best.CopiedLoopWorld);
+				BestRoot->SetObjectField(TEXT("raw_projection_topology"), MakeSupportTopologyDebugJson(Best.RawProjectionTopology));
+				BestRoot->SetObjectField(TEXT("regularized_projection_topology"), MakeSupportTopologyDebugJson(Best.RegularizedProjectionTopology));
+				BestRoot->SetObjectField(TEXT("final_projection_topology"), MakeSupportTopologyDebugJson(Best.FinalProjectionTopology));
+				SetVector2DArrayField(BestRoot, TEXT("no_penetration_sample_pixels"), Best.NoPenetrationSamplePixels);
+				SetVectorArrayField(BestRoot, TEXT("no_penetration_base_world"), Best.NoPenetrationBaseWorld);
+				SetVectorArrayField(BestRoot, TEXT("no_penetration_support_world"), Best.NoPenetrationSupportWorld);
+				SetDoubleArrayField(BestRoot, TEXT("no_penetration_violation_cm"), Best.NoPenetrationViolationCm);
+				SaveJsonObject(
+					BestRoot,
+					FPaths::GetPath(JsonPath) / TEXT("10_attach_support_plane_fallback_best_failed.json"));
+			}
+
+			if (Debug.Attempts.IsValidIndex(BestForceableAttemptIndex))
+			{
+				const FAttachSupportPlaneFallbackAttempt& Best = Debug.Attempts[BestForceableAttemptIndex];
+				TArray<uint8> BestRGBA = Inputs.FacesRGBA;
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, RawCapLoopFaceSpace, FColor(255, 255, 255, 255), 2);
+				if (const int32* SupportIndex = Inputs.FaceIndexById.Find(Best.SupportFaceId))
+				{
+					if (Inputs.Faces.IsValidIndex(*SupportIndex))
+					{
+						DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Inputs.Faces[*SupportIndex].KeyPoints2D, FColor(80, 80, 80, 255), 2);
+					}
+				}
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.VirtualBasePlaneQuad2D, FColor(0, 230, 255, 255), 4);
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, FColor(0, 180, 255, 255), 3);
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.ReprojectedBaseLoop2D, FColor(40, 240, 80, 255), 2);
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.CopiedTargetLoop2D, FColor(255, 140, 0, 255), 2);
+				DrawClosedPolylineRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.ReprojectedCopiedLoop2D, FColor(255, 0, 180, 255), 2);
+				DrawTopologyIntersectionEdgesRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, Best.RawProjectionTopology, FColor(255, 0, 0, 255), 5);
+				DrawTopologyIntersectionEdgesRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.BaseLoop2D, Best.FinalProjectionTopology, FColor(255, 0, 0, 255), 5);
+				DrawArrowRGBA(BestRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Best.ChainStartFaceSpace, Best.ChainEndFaceSpace, FColor(255, 80, 40, 255), 4);
+				for (int32 SampleIndex = 0; SampleIndex < Best.NoPenetrationSamplePixels.Num(); ++SampleIndex)
+				{
+					const double Violation = Best.NoPenetrationViolationCm.IsValidIndex(SampleIndex)
+						? Best.NoPenetrationViolationCm[SampleIndex]
+						: 0.0;
+					const FColor SampleColor = Violation > 0.0
+						? FColor(255, 40, 40, 255)
+						: FColor(40, 240, 80, 255);
+					DrawPointRGBA(
+						BestRGBA,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						FMath::RoundToInt(Best.NoPenetrationSamplePixels[SampleIndex].X),
+						FMath::RoundToInt(Best.NoPenetrationSamplePixels[SampleIndex].Y),
+						SampleColor,
+						5);
+				}
+				SaveRGBAToPng(
+					BestRGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					FPaths::GetPath(PngPath) / TEXT("10_attach_support_plane_fallback_best_forceable.png"));
+
+				TSharedRef<FJsonObject> BestRoot = MakeShared<FJsonObject>();
+				BestRoot->SetNumberField(TEXT("best_forceable_attempt_index"), BestForceableAttemptIndex);
+				BestRoot->SetNumberField(TEXT("chain_index"), Best.ChainIndex);
+				BestRoot->SetNumberField(TEXT("support_face_id"), Best.SupportFaceId);
+				BestRoot->SetStringField(TEXT("forceable_reason"), Best.ForceableReason);
+				BestRoot->SetStringField(TEXT("reject_reason"), Best.RejectReason);
+				BestRoot->SetNumberField(TEXT("max_no_penetration_violation_cm"), Best.MaxNoPenetrationViolationCm);
+				BestRoot->SetNumberField(TEXT("max_reprojection_error_pixels"), Best.MaxReprojectionErrorPixels);
+				BestRoot->SetNumberField(TEXT("contact_distance_pixels"), Best.ContactDistancePixels);
+				BestRoot->SetArrayField(TEXT("anchor_world"), JsonVector(Best.AnchorWorld)->AsArray());
+				BestRoot->SetArrayField(TEXT("chain_end_world"), JsonVector(Best.ChainEndWorld)->AsArray());
+				BestRoot->SetArrayField(TEXT("base_plane_normal"), JsonVector(Best.BasePlaneNormal)->AsArray());
+				BestRoot->SetArrayField(TEXT("support_plane_normal"), JsonVector(Best.SupportPlaneNormal)->AsArray());
+				BestRoot->SetArrayField(TEXT("support_aware_axis_u"), JsonVector(Best.SupportAwareAxisU)->AsArray());
+				BestRoot->SetArrayField(TEXT("support_aware_axis_v"), JsonVector(Best.SupportAwareAxisV)->AsArray());
+				SetVector2DArrayField(BestRoot, TEXT("virtual_base_plane_quad_2d"), Best.VirtualBasePlaneQuad2D);
+				SetVectorArrayField(BestRoot, TEXT("virtual_base_plane_quad_world"), Best.VirtualBasePlaneQuadWorld);
+				SetVector2DArrayField(BestRoot, TEXT("base_loop_2d"), Best.BaseLoop2D);
+				SetVectorArrayField(BestRoot, TEXT("base_loop_world"), Best.BaseLoopWorld);
+				SetVector2DArrayField(BestRoot, TEXT("copied_target_loop_2d"), Best.CopiedTargetLoop2D);
+				SetVectorArrayField(BestRoot, TEXT("copied_loop_world"), Best.CopiedLoopWorld);
+				BestRoot->SetObjectField(TEXT("raw_projection_topology"), MakeSupportTopologyDebugJson(Best.RawProjectionTopology));
+				BestRoot->SetObjectField(TEXT("regularized_projection_topology"), MakeSupportTopologyDebugJson(Best.RegularizedProjectionTopology));
+				BestRoot->SetObjectField(TEXT("final_projection_topology"), MakeSupportTopologyDebugJson(Best.FinalProjectionTopology));
+				SetVector2DArrayField(BestRoot, TEXT("no_penetration_sample_pixels"), Best.NoPenetrationSamplePixels);
+				SetVectorArrayField(BestRoot, TEXT("no_penetration_base_world"), Best.NoPenetrationBaseWorld);
+				SetVectorArrayField(BestRoot, TEXT("no_penetration_support_world"), Best.NoPenetrationSupportWorld);
+				SetDoubleArrayField(BestRoot, TEXT("no_penetration_violation_cm"), Best.NoPenetrationViolationCm);
+				SaveJsonObject(
+					BestRoot,
+					FPaths::GetPath(JsonPath) / TEXT("10_attach_support_plane_fallback_best_forceable.json"));
+			}
+
+			// 10_virtual_face_normal_vs_green_chord: parallelism overlay for n_virtual vs g_proj.
+			int32 NormalAttemptIndex = INDEX_NONE;
+			for (int32 AttemptIdx = 0; AttemptIdx < Debug.Attempts.Num(); ++AttemptIdx)
+			{
+				if (Debug.Attempts[AttemptIdx].bSuccess)
+				{
+					NormalAttemptIndex = AttemptIdx;
+					break;
+				}
+			}
+			if (NormalAttemptIndex == INDEX_NONE)
+			{
+				NormalAttemptIndex = BestFailedAttemptIndex;
+			}
+			if (Debug.Attempts.IsValidIndex(NormalAttemptIndex) &&
+				Debug.Attempts[NormalAttemptIndex].VirtualBasePlaneQuadWorld.Num() == 4)
+			{
+				const FAttachSupportPlaneFallbackAttempt& Sel = Debug.Attempts[NormalAttemptIndex];
+				TArray<uint8> NRGBA = Inputs.FacesRGBA;
+				DrawClosedPolylineRGBA(NRGBA, Inputs.FacesWidth, Inputs.FacesHeight, RawCapLoopFaceSpace, FColor(255, 255, 255, 255), 2);
+				if (const int32* SupportIndex = Inputs.FaceIndexById.Find(Sel.SupportFaceId))
+				{
+					if (Inputs.Faces.IsValidIndex(*SupportIndex))
+					{
+						DrawClosedPolylineRGBA(NRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Inputs.Faces[*SupportIndex].KeyPoints2D, FColor(128, 128, 128, 255), 2);
+					}
+				}
+				DrawClosedPolylineRGBA(NRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Sel.VirtualBasePlaneQuad2D, FColor(0, 230, 255, 255), 4);
+				DrawClosedPolylineRGBA(NRGBA, Inputs.FacesWidth, Inputs.FacesHeight, Sel.BaseLoop2D, FColor(0, 180, 255, 255), 2);
+
+				FVector QuadCentroidWorld = FVector::ZeroVector;
+				for (const FVector& P : Sel.VirtualBasePlaneQuadWorld)
+				{
+					QuadCentroidWorld += P;
+				}
+				QuadCentroidWorld /= double(Sel.VirtualBasePlaneQuadWorld.Num());
+
+				double MinUC = TNumericLimits<double>::Max();
+				double MaxUC = TNumericLimits<double>::Lowest();
+				double MinVC = TNumericLimits<double>::Max();
+				double MaxVC = TNumericLimits<double>::Lowest();
+				for (const FVector& P : Sel.VirtualBasePlaneQuadWorld)
+				{
+					const FVector R = P - QuadCentroidWorld;
+					const double UCoord = FVector::DotProduct(R, Sel.SupportAwareAxisU);
+					const double VCoord = FVector::DotProduct(R, Sel.SupportAwareAxisV);
+					MinUC = FMath::Min(MinUC, UCoord);
+					MaxUC = FMath::Max(MaxUC, UCoord);
+					MinVC = FMath::Min(MinVC, VCoord);
+					MaxVC = FMath::Max(MaxVC, VCoord);
+				}
+				const double USpan = MaxUC - MinUC;
+				const double VSpan = MaxVC - MinVC;
+				const double ChordLen = Sel.ExtrusionVectorWorld.Size();
+				const double L = FMath::Max(ChordLen, USpan * 0.4);
+				const double LShort = FMath::Max(ChordLen * 0.5, VSpan * 0.4);
+
+				const FVector NV = Sel.BasePlaneNormal.GetSafeNormal();
+				const FVector NS = Sel.SupportPlaneNormal.GetSafeNormal();
+
+				FVector2D AnchorPx, ChainEndPx, CentroidPx, NormalEndPx, SupportEndPx;
+				const bool bAnchorOk = ProjectWorldToImageOrthographic(Inputs.Camera, Inputs.FacesWidth, Inputs.FacesHeight, Sel.AnchorWorld, AnchorPx);
+				const bool bChainOk = ProjectWorldToImageOrthographic(Inputs.Camera, Inputs.FacesWidth, Inputs.FacesHeight, Sel.ChainEndWorld, ChainEndPx);
+				const bool bCenOk = ProjectWorldToImageOrthographic(Inputs.Camera, Inputs.FacesWidth, Inputs.FacesHeight, QuadCentroidWorld, CentroidPx);
+				const bool bNvOk = ProjectWorldToImageOrthographic(Inputs.Camera, Inputs.FacesWidth, Inputs.FacesHeight, QuadCentroidWorld + NV * L, NormalEndPx);
+				const bool bNsOk = ProjectWorldToImageOrthographic(Inputs.Camera, Inputs.FacesWidth, Inputs.FacesHeight, QuadCentroidWorld + NS * LShort, SupportEndPx);
+
+				if (bAnchorOk && bChainOk)
+				{
+					DrawArrowRGBA(NRGBA, Inputs.FacesWidth, Inputs.FacesHeight, AnchorPx, ChainEndPx, FColor(255, 225, 40, 255), 4);
+				}
+				if (bCenOk && bNvOk)
+				{
+					DrawArrowRGBA(NRGBA, Inputs.FacesWidth, Inputs.FacesHeight, CentroidPx, NormalEndPx, FColor(255, 40, 220, 255), 4);
+				}
+				if (bCenOk && bNsOk)
+				{
+					DrawArrowRGBA(NRGBA, Inputs.FacesWidth, Inputs.FacesHeight, CentroidPx, SupportEndPx, FColor(255, 255, 255, 255), 4);
+				}
+				if (bAnchorOk)
+				{
+					DrawPointRGBA(NRGBA, Inputs.FacesWidth, Inputs.FacesHeight, FMath::RoundToInt(AnchorPx.X), FMath::RoundToInt(AnchorPx.Y), FColor(255, 0, 0, 255), 6);
+				}
+				SaveRGBAToPng(
+					NRGBA,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					FPaths::GetPath(PngPath) / TEXT("10_virtual_face_normal_vs_green_chord.png"));
+
+				const FVector GP = Sel.ExtrusionVectorWorld.GetSafeNormal();
+				const FVector AU = Sel.SupportAwareAxisU.GetSafeNormal();
+				TSharedRef<FJsonObject> NRoot = MakeShared<FJsonObject>();
+				NRoot->SetNumberField(TEXT("attempt_index"), NormalAttemptIndex);
+				NRoot->SetBoolField(TEXT("attempt_success"), Sel.bSuccess);
+				NRoot->SetNumberField(TEXT("chain_index"), Sel.ChainIndex);
+				NRoot->SetNumberField(TEXT("support_face_id"), Sel.SupportFaceId);
+				NRoot->SetArrayField(TEXT("g_proj_unit"), JsonVector(GP)->AsArray());
+				NRoot->SetArrayField(TEXT("n_virtual"), JsonVector(NV)->AsArray());
+				NRoot->SetArrayField(TEXT("n_support"), JsonVector(NS)->AsArray());
+				NRoot->SetArrayField(TEXT("axis_u"), JsonVector(AU)->AsArray());
+				NRoot->SetNumberField(TEXT("dot_n_virtual_g_proj"), FVector::DotProduct(NV, GP));
+				NRoot->SetNumberField(TEXT("cross_n_virtual_g_proj_magnitude"), FVector::CrossProduct(NV, GP).Size());
+				NRoot->SetNumberField(TEXT("dot_n_virtual_n_support"), FVector::DotProduct(NV, NS));
+				NRoot->SetNumberField(TEXT("dot_axis_u_n_virtual"), FVector::DotProduct(AU, NV));
+				NRoot->SetNumberField(TEXT("dot_axis_u_n_support"), FVector::DotProduct(AU, NS));
+				NRoot->SetNumberField(TEXT("chord_length_cm"), ChordLen);
+				NRoot->SetNumberField(TEXT("normal_arrow_length_cm"), L);
+				NRoot->SetNumberField(TEXT("support_arrow_length_cm"), LShort);
+				NRoot->SetArrayField(TEXT("anchor_world"), JsonVector(Sel.AnchorWorld)->AsArray());
+				NRoot->SetArrayField(TEXT("chain_end_world"), JsonVector(Sel.ChainEndWorld)->AsArray());
+				NRoot->SetArrayField(TEXT("quad_centroid_world"), JsonVector(QuadCentroidWorld)->AsArray());
+				SaveJsonObject(
+					NRoot,
+					FPaths::GetPath(JsonPath) / TEXT("10_virtual_face_normal_vs_green_chord.json"));
+			}
+		}
 	}
 
 	static FComponentResult MakeFailureResult(const FString& ComponentName, const FString& Error, const FString& OutputDir)
@@ -7489,6 +9680,8 @@ namespace
 		Result.SourcePlaneNormal = SelectedFace.Normal.GetSafeNormal();
 		Result.SourceFaceVerticesWorld = SelectedFace.KeyPoints3D;
 		Result.OrientedNormal = Result.SourcePlaneNormal;
+		Result.ReconstructionMethod = TEXT("direct_cap_face");
+		Result.bAttachSupportPlaneFallback = false;
 
 		if (SourcePolygonCapSpace.Num() != CopiedPolygonCapSpace.Num())
 		{
@@ -7682,6 +9875,7 @@ namespace
 
 			Result.CopiedLoopWorld.Add(P + Result.OrientedNormal * Result.ExtrusionDepth);
 		}
+		Result.ExtrusionVectorWorld = Result.OrientedNormal * Result.ExtrusionDepth;
 
 		Result.ReprojectedSourceLoop2D.Reserve(Result.SourceLoopWorld.Num());
 		Result.ReprojectedCopiedLoop2D.Reserve(Result.CopiedLoopWorld.Num());
@@ -7769,11 +9963,1601 @@ namespace
 		return Result;
 	}
 
+	static bool BuildSupportAwareFaceBasis(
+		const FVector& BaseNormalIn,
+		const FVector& SupportNormalIn,
+		FVector& OutAxisU,
+		FVector& OutAxisV)
+	{
+		const FVector BaseNormal = BaseNormalIn.GetSafeNormal();
+		const FVector SupportNormal = SupportNormalIn.GetSafeNormal();
+		if (BaseNormal.IsNearlyZero() || SupportNormal.IsNearlyZero())
+		{
+			return false;
+		}
+
+		FVector AxisV = SupportNormal - BaseNormal * FVector::DotProduct(SupportNormal, BaseNormal);
+		if (AxisV.SizeSquared() < 1e-8)
+		{
+			AxisV = FVector::UpVector - BaseNormal * FVector::DotProduct(FVector::UpVector, BaseNormal);
+		}
+		if (AxisV.SizeSquared() < 1e-8)
+		{
+			AxisV = FVector::RightVector - BaseNormal * FVector::DotProduct(FVector::RightVector, BaseNormal);
+		}
+		AxisV = AxisV.GetSafeNormal();
+		if (AxisV.IsNearlyZero())
+		{
+			return false;
+		}
+
+		FVector AxisU = FVector::CrossProduct(AxisV, BaseNormal).GetSafeNormal();
+		if (AxisU.IsNearlyZero())
+		{
+			return false;
+		}
+		if (FVector::DotProduct(FVector::CrossProduct(AxisU, AxisV), BaseNormal) < 0.0)
+		{
+			AxisU *= -1.0;
+		}
+
+		OutAxisU = AxisU;
+		OutAxisV = AxisV;
+		return true;
+	}
+
+	static double DistancePointToClosedLoop2D(const FVector2D& P, const TArray<FVector2D>& Loop)
+	{
+		return FMath::Sqrt(DistancePointToPolylineSquared2D(P, Loop, true));
+	}
+
+	static bool CheckAttachSupportNoPenetration(
+		const FCommonInputs& Inputs,
+		const FFaceInfo& SupportFace,
+		const TArray<FVector2D>& SourceLoop2D,
+		const TArray<FVector>& SourceLoopWorld,
+		double TolCm,
+		double& OutMaxViolationCm,
+		FString& OutError,
+		TArray<FVector2D>* OutSamplePixels = nullptr,
+		TArray<FVector>* OutBaseWorld = nullptr,
+		TArray<FVector>* OutSupportWorld = nullptr,
+		TArray<double>* OutViolationCm = nullptr,
+		bool bStopOnFirstFailure = true)
+	{
+		OutMaxViolationCm = 0.0;
+		OutError.Reset();
+		if (OutSamplePixels) { OutSamplePixels->Reset(); }
+		if (OutBaseWorld) { OutBaseWorld->Reset(); }
+		if (OutSupportWorld) { OutSupportWorld->Reset(); }
+		if (OutViolationCm) { OutViolationCm->Reset(); }
+		if (SourceLoop2D.Num() < 3 || SourceLoop2D.Num() != SourceLoopWorld.Num())
+		{
+			OutError = TEXT("source loop is invalid for no-penetration test");
+			return false;
+		}
+
+		auto TestSample = [&](const FVector2D& Pixel, const FVector& World, int32 SampleIndex) -> bool
+		{
+			if (OutSamplePixels) { OutSamplePixels->Add(Pixel); }
+			if (OutBaseWorld) { OutBaseWorld->Add(World); }
+			FVector SupportHit;
+			if (!IntersectPixelWithPlaneOrthographic(
+				Inputs.Camera,
+				Inputs.FacesWidth,
+				Inputs.FacesHeight,
+				Pixel,
+				SupportFace.PlanePoint,
+				SupportFace.Normal,
+				SupportHit))
+			{
+				OutError = FString::Printf(TEXT("sample %d failed support-plane raycast"), SampleIndex);
+				if (OutSupportWorld) { OutSupportWorld->Add(FVector::ZeroVector); }
+				if (OutViolationCm) { OutViolationCm->Add(TNumericLimits<double>::Max()); }
+				return false;
+			}
+			if (OutSupportWorld) { OutSupportWorld->Add(SupportHit); }
+			const double Violation = FVector::DotProduct(World - SupportHit, Inputs.Camera.Forward.GetSafeNormal());
+			OutMaxViolationCm = FMath::Max(OutMaxViolationCm, Violation);
+			if (OutViolationCm) { OutViolationCm->Add(Violation); }
+			if (Violation > TolCm)
+			{
+				if (OutError.IsEmpty())
+				{
+					OutError = FString::Printf(
+						TEXT("sample %d is %.6f cm behind support point (tol %.6f)"),
+						SampleIndex,
+						Violation,
+						TolCm);
+				}
+				return false;
+			}
+			return true;
+		};
+
+		bool bAllPass = true;
+		int32 SampleIndex = 0;
+		for (int32 i = 0; i < SourceLoop2D.Num(); ++i)
+		{
+			if (!TestSample(SourceLoop2D[i], SourceLoopWorld[i], SampleIndex++))
+			{
+				bAllPass = false;
+				if (bStopOnFirstFailure)
+				{
+					return false;
+				}
+			}
+			const int32 Next = (i + 1) % SourceLoop2D.Num();
+			if (!TestSample(
+				(SourceLoop2D[i] + SourceLoop2D[Next]) * 0.5,
+				(SourceLoopWorld[i] + SourceLoopWorld[Next]) * 0.5,
+				SampleIndex++))
+			{
+				bAllPass = false;
+				if (bStopOnFirstFailure)
+				{
+					return false;
+				}
+			}
+		}
+		if (!bAllPass && OutError.IsEmpty())
+		{
+			OutError = FString::Printf(
+				TEXT("max no-penetration violation %.6f cm exceeds tolerance %.6f"),
+				OutMaxViolationCm,
+				TolCm);
+		}
+		return bAllPass;
+	}
+
+	static bool ReprojectSolidLoops(
+		const FCommonInputs& Inputs,
+		FSolidReconstructionResult& Result,
+		FString& OutError)
+	{
+		OutError.Reset();
+		Result.DepthSamples.Reset();
+		Result.ReprojectedSourceLoop2D.Reset();
+		Result.ReprojectedCopiedLoop2D.Reset();
+		Result.MeanSourceReprojectionErrorPixels = 0.0;
+		Result.MaxSourceReprojectionErrorPixels = 0.0;
+		Result.MeanCopiedReprojectionErrorPixels = 0.0;
+		Result.MaxCopiedReprojectionErrorPixels = 0.0;
+
+		if (Result.SourceLoop2D.Num() < 3 ||
+			Result.CopiedTargetLoop2D.Num() != Result.SourceLoop2D.Num() ||
+			Result.SourceLoopWorld.Num() != Result.SourceLoop2D.Num() ||
+			Result.CopiedLoopWorld.Num() != Result.SourceLoopWorld.Num())
+		{
+			OutError = TEXT("solid loops have inconsistent counts before reprojection");
+			return false;
+		}
+
+		int32 ValidVertexCount = 0;
+		double SourceErrorSum = 0.0;
+		double CopiedErrorSum = 0.0;
+		Result.DepthSamples.Reserve(Result.SourceLoopWorld.Num());
+		Result.ReprojectedSourceLoop2D.Reserve(Result.SourceLoopWorld.Num());
+		Result.ReprojectedCopiedLoop2D.Reserve(Result.CopiedLoopWorld.Num());
+		for (int32 i = 0; i < Result.SourceLoopWorld.Num(); ++i)
+		{
+			FVector2D SourceProj;
+			FVector2D CopiedProj;
+			if (!ProjectWorldToImageOrthographic(
+				Inputs.Camera,
+				Inputs.FacesWidth,
+				Inputs.FacesHeight,
+				Result.SourceLoopWorld[i],
+				SourceProj) ||
+				!ProjectWorldToImageOrthographic(
+					Inputs.Camera,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					Result.CopiedLoopWorld[i],
+					CopiedProj))
+			{
+				OutError = TEXT("failed to reproject fallback solid loop");
+				return false;
+			}
+
+			Result.ReprojectedSourceLoop2D.Add(SourceProj);
+			Result.ReprojectedCopiedLoop2D.Add(CopiedProj);
+			const double SourceError = FVector2D::Distance(SourceProj, Result.SourceLoop2D[i]);
+			const double CopiedError = FVector2D::Distance(CopiedProj, Result.CopiedTargetLoop2D[i]);
+			SourceErrorSum += SourceError;
+			CopiedErrorSum += CopiedError;
+			Result.MaxSourceReprojectionErrorPixels = FMath::Max(Result.MaxSourceReprojectionErrorPixels, SourceError);
+			Result.MaxCopiedReprojectionErrorPixels = FMath::Max(Result.MaxCopiedReprojectionErrorPixels, CopiedError);
+
+			FSolidDepthSample Sample;
+			Sample.Index = i;
+			Sample.bValid = CopiedError <= Result.MaxDepthSampleReprojectionErrorPixels;
+			Sample.Error = Sample.bValid ? FString() : TEXT("fallback copied vertex reprojection error is too large");
+			Sample.SourcePixel = Result.SourceLoop2D[i];
+			Sample.CopiedPixel = Result.CopiedTargetLoop2D[i];
+			Sample.SourceWorld = Result.SourceLoopWorld[i];
+			Sample.PointOnExtrusion = Result.CopiedLoopWorld[i];
+			Sample.PointOnRay = Result.CopiedLoopWorld[i];
+			Sample.Depth = Result.ExtrusionDepth;
+			Sample.ClosestWorldDistance = 0.0;
+			Sample.ReprojectionErrorPixels = CopiedError;
+			if (Sample.bValid)
+			{
+				++ValidVertexCount;
+			}
+			Result.DepthSamples.Add(Sample);
+		}
+
+		Result.MeanSourceReprojectionErrorPixels = SourceErrorSum / double(FMath::Max(1, Result.ReprojectedSourceLoop2D.Num()));
+		Result.MeanCopiedReprojectionErrorPixels = CopiedErrorSum / double(FMath::Max(1, Result.ReprojectedCopiedLoop2D.Num()));
+		if (ValidVertexCount < MinSolidDepthSamples)
+		{
+			OutError = FString::Printf(
+				TEXT("fallback reprojection has only %d valid vertices, need %d"),
+				ValidVertexCount,
+				MinSolidDepthSamples);
+			return false;
+		}
+		if (Result.MaxCopiedReprojectionErrorPixels > Result.MaxDepthSampleReprojectionErrorPixels)
+		{
+			OutError = FString::Printf(
+				TEXT("fallback max copied reprojection error %.3f exceeds threshold %.3f"),
+				Result.MaxCopiedReprojectionErrorPixels,
+				Result.MaxDepthSampleReprojectionErrorPixels);
+			return false;
+		}
+		return true;
+	}
+
+	static void BuildVirtualBasePlaneDebugQuad(
+		const FCommonInputs& Inputs,
+		const FVector& AnchorWorld,
+		const FVector& AxisUWorld,
+		const FVector& AxisVWorld,
+		const TArray<FVector>& BaseLoopWorld,
+		double FallbackExtent,
+		TArray<FVector>& OutQuadWorld,
+		TArray<FVector2D>& OutQuad2D)
+	{
+		OutQuadWorld.Reset();
+		OutQuad2D.Reset();
+		const FVector AxisU = AxisUWorld.GetSafeNormal();
+		const FVector AxisV = AxisVWorld.GetSafeNormal();
+		if (AxisU.IsNearlyZero() || AxisV.IsNearlyZero())
+		{
+			return;
+		}
+
+		double MinU = TNumericLimits<double>::Max();
+		double MaxU = -TNumericLimits<double>::Max();
+		double MinV = TNumericLimits<double>::Max();
+		double MaxV = -TNumericLimits<double>::Max();
+		for (const FVector& P : BaseLoopWorld)
+		{
+			const FVector Rel = P - AnchorWorld;
+			const double U = FVector::DotProduct(Rel, AxisU);
+			const double V = FVector::DotProduct(Rel, AxisV);
+			MinU = FMath::Min(MinU, U);
+			MaxU = FMath::Max(MaxU, U);
+			MinV = FMath::Min(MinV, V);
+			MaxV = FMath::Max(MaxV, V);
+		}
+
+		const double Extent = FMath::Max(50.0, FallbackExtent);
+		if (!FMath::IsFinite(MinU) || !FMath::IsFinite(MaxU) || MinU > MaxU)
+		{
+			MinU = -Extent * 0.5;
+			MaxU = Extent * 0.5;
+		}
+		if (!FMath::IsFinite(MinV) || !FMath::IsFinite(MaxV) || MinV > MaxV)
+		{
+			MinV = -Extent * 0.5;
+			MaxV = Extent * 0.5;
+		}
+		if (MaxU - MinU < 1.0)
+		{
+			const double Center = 0.5 * (MinU + MaxU);
+			MinU = Center - Extent * 0.5;
+			MaxU = Center + Extent * 0.5;
+		}
+		if (MaxV - MinV < 1.0)
+		{
+			const double Center = 0.5 * (MinV + MaxV);
+			MinV = Center - Extent * 0.5;
+			MaxV = Center + Extent * 0.5;
+		}
+
+		const double PadU = FMath::Max((MaxU - MinU) * 0.15, 5.0);
+		const double PadV = FMath::Max((MaxV - MinV) * 0.15, 5.0);
+		MinU -= PadU;
+		MaxU += PadU;
+		MinV -= PadV;
+		MaxV += PadV;
+
+		OutQuadWorld.Add(AnchorWorld + AxisU * MinU + AxisV * MinV);
+		OutQuadWorld.Add(AnchorWorld + AxisU * MaxU + AxisV * MinV);
+		OutQuadWorld.Add(AnchorWorld + AxisU * MaxU + AxisV * MaxV);
+		OutQuadWorld.Add(AnchorWorld + AxisU * MinU + AxisV * MaxV);
+		for (const FVector& P : OutQuadWorld)
+		{
+			FVector2D Pixel;
+			if (ProjectWorldToImageOrthographic(
+				Inputs.Camera,
+				Inputs.FacesWidth,
+				Inputs.FacesHeight,
+				P,
+				Pixel))
+			{
+				OutQuad2D.Add(Pixel);
+			}
+		}
+		if (OutQuad2D.Num() != OutQuadWorld.Num())
+		{
+			OutQuad2D.Reset();
+		}
+	}
+
+	static void PopulateAttachFallbackAttemptProjectionDebug(
+		const FCommonInputs& Inputs,
+		const FSolidReconstructionResult& CandidateSolid,
+		FAttachSupportPlaneFallbackAttempt& Attempt)
+	{
+		Attempt.bHasBaseProjection = CandidateSolid.SourceLoopWorld.Num() >= 3 &&
+			CandidateSolid.SourceLoopWorld.Num() == CandidateSolid.SourceLoop2D.Num();
+		Attempt.BaseLoop2D = CandidateSolid.SourceLoop2D;
+		Attempt.CopiedTargetLoop2D = CandidateSolid.CopiedTargetLoop2D;
+		Attempt.BaseLoopWorld = CandidateSolid.SourceLoopWorld;
+		Attempt.CopiedLoopWorld.Reset();
+		Attempt.ReprojectedBaseLoop2D.Reset();
+		Attempt.ReprojectedCopiedLoop2D.Reset();
+		if (!Attempt.bHasBaseProjection)
+		{
+			return;
+		}
+
+		Attempt.CopiedLoopWorld.Reserve(Attempt.BaseLoopWorld.Num());
+		for (const FVector& P : Attempt.BaseLoopWorld)
+		{
+			Attempt.CopiedLoopWorld.Add(P + Attempt.ExtrusionVectorWorld);
+		}
+		for (int32 i = 0; i < Attempt.BaseLoopWorld.Num(); ++i)
+		{
+			FVector2D SourcePixel;
+			if (ProjectWorldToImageOrthographic(
+				Inputs.Camera,
+				Inputs.FacesWidth,
+				Inputs.FacesHeight,
+				Attempt.BaseLoopWorld[i],
+				SourcePixel))
+			{
+				Attempt.ReprojectedBaseLoop2D.Add(SourcePixel);
+			}
+			FVector2D CopiedPixel;
+			if (Attempt.CopiedLoopWorld.IsValidIndex(i) &&
+				ProjectWorldToImageOrthographic(
+					Inputs.Camera,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					Attempt.CopiedLoopWorld[i],
+					CopiedPixel))
+			{
+				Attempt.ReprojectedCopiedLoop2D.Add(CopiedPixel);
+			}
+		}
+		BuildVirtualBasePlaneDebugQuad(
+			Inputs,
+			Attempt.AnchorWorld,
+			Attempt.SupportAwareAxisU,
+			Attempt.SupportAwareAxisV,
+			Attempt.BaseLoopWorld,
+			Attempt.ExtrusionVectorWorld.Size(),
+			Attempt.VirtualBasePlaneQuadWorld,
+			Attempt.VirtualBasePlaneQuad2D);
+	}
+
+	static bool TryBuildAttachSupportPlaneFallback(
+		const FString& ComponentName,
+		const FString& PressDir,
+		const FString& ComponentDir,
+		int32 CapWidth,
+		int32 CapHeight,
+		double ScaleX,
+		double ScaleY,
+		const TArray<FVector2D>& RawCapPolygon,
+		const TArray<FCapBoundaryRunInput>& BoundaryRuns,
+		const TArray<FFromLZGreenChainCandidate2D>& GreenChains,
+		const FCommonInputs& Inputs,
+		const FFromLZFaceReconstructionParams& Params,
+		FSolidReconstructionResult& OutSolid,
+		FAttachSupportPlaneFallbackDebug& OutDebug)
+	{
+		OutDebug = FAttachSupportPlaneFallbackDebug();
+		OutDebug.bAttempted = true;
+		OutDebug.bEnabled = Params.bEnableAttachSupportPlaneFallback;
+		OutDebug.SupportFaceVoteMinCoverage = FMath::Clamp(double(Params.SupportFaceVoteMinCoverage), 0.0, 1.0);
+		OutDebug.SupportFaceVoteSampleStepPx = FMath::Max(1.0, double(Params.SupportFaceVoteSampleStepPx));
+		InitializeSolidResult(OutSolid, ComponentName, PressDir, Inputs);
+		OutSolid.Action = TEXT("attach");
+		OutSolid.ReconstructionMethod = TEXT("attach_support_plane_fallback");
+		OutSolid.bAttachSupportPlaneFallback = true;
+		OutSolid.SourcePolygonKey = TEXT("cap_polygon_support_plane_base");
+		OutSolid.CopiedPolygonKey = TEXT("cap_polygon_support_plane_extruded");
+		OutSolid.CapWidth = CapWidth;
+		OutSolid.CapHeight = CapHeight;
+
+		TArray<FVector2D> RawCapLoopFaceSpace;
+		MapPolygonToFacesSpace(RawCapPolygon, ScaleX, ScaleY, RawCapLoopFaceSpace);
+
+		if (!Params.bEnableAttachSupportPlaneFallback)
+		{
+			OutDebug.Error = TEXT("attach support-plane fallback is disabled");
+			SaveAttachSupportPlaneFallbackDebug(
+				OutDebug, Inputs, RawCapLoopFaceSpace,
+				ComponentDir / TEXT("10_attach_support_plane_fallback.json"),
+				ComponentDir / TEXT("10_attach_support_plane_fallback.png"));
+			return false;
+		}
+		if (RawCapPolygon.Num() < 3)
+		{
+			OutDebug.Error = TEXT("raw cap polygon has fewer than three points");
+			SaveAttachSupportPlaneFallbackDebug(
+				OutDebug, Inputs, RawCapLoopFaceSpace,
+				ComponentDir / TEXT("10_attach_support_plane_fallback.json"),
+				ComponentDir / TEXT("10_attach_support_plane_fallback.png"));
+			return false;
+		}
+		if (GreenChains.Num() == 0)
+		{
+			OutDebug.Error = TEXT("no green chain candidates are available");
+			SaveAttachSupportPlaneFallbackDebug(
+				OutDebug, Inputs, RawCapLoopFaceSpace,
+				ComponentDir / TEXT("10_attach_support_plane_fallback.json"),
+				ComponentDir / TEXT("10_attach_support_plane_fallback.png"));
+			return false;
+		}
+		if (!Inputs.Camera.bHasProjectionMatrix ||
+			!IsUsableOrthographicProjectionMatrix(Inputs.Camera.ProjectionMatrix))
+		{
+			OutDebug.Error = TEXT("fallback requires a usable orthographic projection matrix");
+			SaveAttachSupportPlaneFallbackDebug(
+				OutDebug, Inputs, RawCapLoopFaceSpace,
+				ComponentDir / TEXT("10_attach_support_plane_fallback.json"),
+				ComponentDir / TEXT("10_attach_support_plane_fallback.png"));
+			return false;
+		}
+
+		bool bHasBestSuccessfulAttempt = false;
+		double BestSuccessfulSupportMinCameraDistance = TNumericLimits<double>::Max();
+		double BestSuccessfulNoPenetrationViolationCm = TNumericLimits<double>::Max();
+		double BestSuccessfulReprojectionErrorPixels = TNumericLimits<double>::Max();
+		int32 BestSuccessfulAttemptIndex = INDEX_NONE;
+		FSolidReconstructionResult BestSuccessfulSolid;
+
+		for (int32 ChainIndex = 0; ChainIndex < GreenChains.Num(); ++ChainIndex)
+		{
+			const FFromLZGreenChainCandidate2D& Chain = GreenChains[ChainIndex];
+			FAttachSupportPlaneFallbackAttempt Attempt;
+			Attempt.ChainIndex = ChainIndex;
+			Attempt.SeedStrokeId = Chain.SeedStrokeId;
+			Attempt.ChainPathLength = Chain.PathLength;
+			Attempt.ChainChordLength = Chain.ChordLength;
+
+			FVector2D StartCap = Chain.Start;
+			FVector2D EndCap = Chain.End;
+			if (DistancePointToClosedLoop2D(FVector2D(StartCap.X * ScaleX, StartCap.Y * ScaleY), RawCapLoopFaceSpace) >
+				DistancePointToClosedLoop2D(FVector2D(EndCap.X * ScaleX, EndCap.Y * ScaleY), RawCapLoopFaceSpace))
+			{
+				Swap(StartCap, EndCap);
+			}
+			Attempt.ChainStartFaceSpace = FVector2D(StartCap.X * ScaleX, StartCap.Y * ScaleY);
+			Attempt.ChainEndFaceSpace = FVector2D(EndCap.X * ScaleX, EndCap.Y * ScaleY);
+			if ((Attempt.ChainEndFaceSpace - Attempt.ChainStartFaceSpace).SizeSquared() < 1e-8)
+			{
+				Attempt.RejectReason = TEXT("chain chord is too short in faces space");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+
+			FSupportFaceVoteResult Vote;
+			if (!VoteSupportFaceForSegment(
+				Inputs,
+				Attempt.ChainStartFaceSpace,
+				Attempt.ChainEndFaceSpace,
+				Params.SupportFaceVoteRadiusPx,
+				OutDebug.SupportFaceVoteSampleStepPx,
+				OutDebug.SupportFaceVoteMinCoverage,
+				Vote))
+			{
+				Attempt.SupportFaceCandidates = Vote.FaceCandidates;
+				Attempt.SupportVoteCoverage = Vote.Coverage;
+				Attempt.SupportVotePixelCoverage = Vote.VotePixelCoverage;
+				Attempt.SupportVotePixels = Vote.VotePixels;
+				Attempt.SupportConsideredPixels = Vote.ConsideredPixels;
+				Attempt.SupportHitSampleCount = Vote.HitSampleCount;
+				Attempt.SupportTotalSampleCount = Vote.TotalSampleCount;
+				Attempt.SupportFaceWorldZMax = Vote.WorldZMax;
+				Attempt.SupportFaceWorldZAverage = Vote.WorldZAverage;
+				Attempt.SupportMinCameraDistance = Vote.MinCameraDistance;
+				Attempt.SupportWorstPolygonDistancePx = Vote.WorstPolygonDistancePx;
+				Attempt.RejectReason = Vote.Error;
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			Attempt.SupportFaceId = Vote.FaceId;
+			Attempt.SupportFaceCandidates = Vote.FaceCandidates;
+			Attempt.SupportVoteCoverage = Vote.Coverage;
+			Attempt.SupportVotePixelCoverage = Vote.VotePixelCoverage;
+			Attempt.SupportVotePixels = Vote.VotePixels;
+			Attempt.SupportConsideredPixels = Vote.ConsideredPixels;
+			Attempt.SupportHitSampleCount = Vote.HitSampleCount;
+			Attempt.SupportTotalSampleCount = Vote.TotalSampleCount;
+			Attempt.SupportFaceWorldZMax = Vote.WorldZMax;
+			Attempt.SupportFaceWorldZAverage = Vote.WorldZAverage;
+			Attempt.SupportMinCameraDistance = Vote.MinCameraDistance;
+			Attempt.SupportWorstPolygonDistancePx = Vote.WorstPolygonDistancePx;
+
+			const int32* SupportIndex = Inputs.FaceIndexById.Find(Vote.FaceId);
+			if (!SupportIndex)
+			{
+				Attempt.RejectReason = TEXT("support face id was not found in face table");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			const FFaceInfo& SupportFace = Inputs.Faces[*SupportIndex];
+			Attempt.SupportPlaneNormal = SupportFace.Normal.GetSafeNormal();
+
+			if (!IntersectPixelWithPlaneOrthographic(
+				Inputs.Camera,
+				Inputs.FacesWidth,
+				Inputs.FacesHeight,
+				Attempt.ChainStartFaceSpace,
+				SupportFace.PlanePoint,
+				SupportFace.Normal,
+				Attempt.AnchorWorld) ||
+				!IntersectPixelWithPlaneOrthographic(
+					Inputs.Camera,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					Attempt.ChainEndFaceSpace,
+					SupportFace.PlanePoint,
+					SupportFace.Normal,
+					Attempt.ChainEndWorld))
+			{
+				Attempt.RejectReason = TEXT("failed to raycast green chain endpoints onto support face");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+
+			Attempt.ExtrusionVectorWorld = Attempt.ChainEndWorld - Attempt.AnchorWorld;
+			const double GreenChordWorldCm = Attempt.ExtrusionVectorWorld.Size();
+			const bool bBelowPreferredGreenChord =
+				GreenChordWorldCm < FMath::Max(
+					double(Params.SupportForceHardMinGreenChordCm),
+					double(Params.SupportForcePreferredMinGreenChordCm));
+			if (GreenChordWorldCm < FMath::Max(0.0, double(Params.SupportForceHardMinGreenChordCm)))
+			{
+				Attempt.RejectReason = FString::Printf(
+					TEXT("3D green chord %.6f cm is below force hard minimum %.6f cm"),
+					GreenChordWorldCm,
+					double(Params.SupportForceHardMinGreenChordCm));
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			Attempt.BasePlaneNormal = Attempt.ExtrusionVectorWorld.GetSafeNormal();
+			if (Attempt.BasePlaneNormal.IsNearlyZero())
+			{
+				Attempt.RejectReason = TEXT("3D green chord is too short");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			if (!BuildSupportAwareFaceBasis(
+				Attempt.BasePlaneNormal,
+				SupportFace.Normal,
+				Attempt.SupportAwareAxisU,
+				Attempt.SupportAwareAxisV))
+			{
+				Attempt.RejectReason = TEXT("failed to build support-aware base-face basis");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+
+			FSolidReconstructionResult CandidateSolid;
+			InitializeSolidResult(CandidateSolid, ComponentName, PressDir, Inputs);
+			CandidateSolid.Action = TEXT("attach");
+			CandidateSolid.ReconstructionMethod = TEXT("attach_support_plane_fallback");
+			CandidateSolid.bAttachSupportPlaneFallback = true;
+			CandidateSolid.SourcePolygonKey = TEXT("cap_polygon_support_plane_base");
+			CandidateSolid.CopiedPolygonKey = TEXT("cap_polygon_support_plane_extruded");
+			CandidateSolid.CapWidth = CapWidth;
+			CandidateSolid.CapHeight = CapHeight;
+			CandidateSolid.SelectedFaceId = SupportFace.Id;
+			CandidateSolid.SupportFaceId = SupportFace.Id;
+			CandidateSolid.SupportGreenChainIndex = ChainIndex;
+			CandidateSolid.SourcePlanePoint = Attempt.AnchorWorld;
+			CandidateSolid.SourcePlaneNormal = Attempt.BasePlaneNormal;
+			CandidateSolid.SupportPlanePoint = SupportFace.PlanePoint;
+			CandidateSolid.SupportPlaneNormal = SupportFace.Normal.GetSafeNormal();
+			CandidateSolid.SourceFaceVerticesWorld = SupportFace.KeyPoints3D;
+			CandidateSolid.OrientedNormal = Attempt.BasePlaneNormal;
+			CandidateSolid.ExtrusionVectorWorld = Attempt.ExtrusionVectorWorld;
+			CandidateSolid.ExtrusionDepth = Attempt.ExtrusionVectorWorld.Size();
+			CandidateSolid.SourceLoop2D = RawCapLoopFaceSpace;
+			CandidateSolid.SourceToCopiedVector2D = Attempt.ChainEndFaceSpace - Attempt.ChainStartFaceSpace;
+			CandidateSolid.CopiedTargetLoop2D.Reset();
+			CandidateSolid.CopiedTargetLoop2D.Reserve(CandidateSolid.SourceLoop2D.Num());
+			for (const FVector2D& P : CandidateSolid.SourceLoop2D)
+			{
+				CandidateSolid.CopiedTargetLoop2D.Add(P + CandidateSolid.SourceToCopiedVector2D);
+			}
+			SimplifyLoopPairs(CandidateSolid.SourceLoop2D, CandidateSolid.CopiedTargetLoop2D);
+			if (CandidateSolid.SourceLoop2D.Num() < 3 ||
+				CandidateSolid.SourceLoop2D.Num() != CandidateSolid.CopiedTargetLoop2D.Num())
+			{
+				Attempt.RejectReason = TEXT("fallback cap loop became invalid after cleanup");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+
+			CandidateSolid.SourceLoopWorld.Reserve(CandidateSolid.SourceLoop2D.Num());
+			bool bBaseProjectionOk = true;
+			for (const FVector2D& P : CandidateSolid.SourceLoop2D)
+			{
+				FVector Hit;
+				if (!IntersectPixelWithPlaneOrthographic(
+					Inputs.Camera,
+					Inputs.FacesWidth,
+					Inputs.FacesHeight,
+					P,
+					Attempt.AnchorWorld,
+					Attempt.BasePlaneNormal,
+					Hit))
+				{
+					bBaseProjectionOk = false;
+					break;
+				}
+				CandidateSolid.SourceLoopWorld.Add(Hit);
+			}
+			if (!bBaseProjectionOk)
+			{
+				Attempt.RejectReason = TEXT("failed to project raw cap onto fallback base plane");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			PopulateAttachFallbackAttemptProjectionDebug(Inputs, CandidateSolid, Attempt);
+			if (!CheckSupportPlaneProjectionTopology(
+				TEXT("raw_projection"),
+				CandidateSolid.SourceLoop2D,
+				CandidateSolid.SourceLoopWorld,
+				Attempt.AnchorWorld,
+				Attempt.SupportAwareAxisU,
+				Attempt.SupportAwareAxisV,
+				Attempt.RawProjectionTopology))
+			{
+				Attempt.RejectReason = FString::Printf(
+					TEXT("support_projection_topology_invalid(raw): %s"),
+					*Attempt.RawProjectionTopology.Reason);
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			const TArray<FVector2D> RawProjectedSourceLoop2D = CandidateSolid.SourceLoop2D;
+			const TArray<FVector2D> RawProjectedCopiedLoop2D = CandidateSolid.CopiedTargetLoop2D;
+			const TArray<FVector> RawProjectedSourceLoopWorld = CandidateSolid.SourceLoopWorld;
+
+			FString NoPenetrationError;
+			if (!CheckAttachSupportNoPenetration(
+				Inputs,
+				SupportFace,
+				CandidateSolid.SourceLoop2D,
+				CandidateSolid.SourceLoopWorld,
+				Params.NoPenetrationTolCm,
+				Attempt.MaxNoPenetrationViolationCm,
+				NoPenetrationError,
+				&Attempt.NoPenetrationSamplePixels,
+				&Attempt.NoPenetrationBaseWorld,
+				&Attempt.NoPenetrationSupportWorld,
+				&Attempt.NoPenetrationViolationCm,
+				/*bStopOnFirstFailure*/ false))
+			{
+				Attempt.bForceable = true;
+				Attempt.ForceableReason = TEXT("no_penetration_exceeded_threshold_raw");
+				Attempt.RejectReason = FString::Printf(TEXT("raw no-penetration failed: %s"), *NoPenetrationError);
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+
+			TArray<FVector> RegularizedSourceLoopWorld;
+			FFaceInfo VirtualBaseFace;
+			VirtualBaseFace.Id = SupportFace.Id;
+			VirtualBaseFace.Color = SupportFace.Color;
+			VirtualBaseFace.PlanePoint = Attempt.AnchorWorld;
+			VirtualBaseFace.Normal = Attempt.BasePlaneNormal;
+			VirtualBaseFace.KeyPoints2D = CandidateSolid.SourceLoop2D;
+			VirtualBaseFace.KeyPoints3D = CandidateSolid.SourceLoopWorld;
+			Attempt.bOrthogonalAttempted = true;
+			const bool bRegularizationApplied = RegularizeCapToWorldOrthogonalPolygon(
+				VirtualBaseFace,
+				Inputs,
+				CandidateSolid.SourceToCopiedVector2D,
+				CandidateSolid.SourceLoopWorld,
+				BoundaryRuns,
+				FVector2D::ZeroVector,
+				ScaleX,
+				ScaleY,
+				RegularizedSourceLoopWorld,
+				CandidateSolid.CapBBoxRegularization,
+				&Attempt.SupportAwareAxisU,
+				&Attempt.SupportAwareAxisV,
+				TEXT("attach_support_plane_virtual_base"));
+			CandidateSolid.CapBBoxRegularization.SelectedFaceId = SupportFace.Id;
+			CandidateSolid.CapBBoxRegularization.Action = TEXT("attach");
+			CandidateSolid.CapBBoxRegularization.SourcePolygonKey = CandidateSolid.SourcePolygonKey;
+			CandidateSolid.CapBBoxRegularization.CopiedPolygonKey = CandidateSolid.CopiedPolygonKey;
+			Attempt.bOrthogonalApplied = bRegularizationApplied;
+			Attempt.bOrthogonalFallbackToOriginal = !bRegularizationApplied || CandidateSolid.CapBBoxRegularization.bFallbackToOriginal;
+			if (bRegularizationApplied)
+			{
+				CandidateSolid.SourceLoopWorld = MoveTemp(RegularizedSourceLoopWorld);
+				CandidateSolid.SourceLoop2D.Reset();
+				CandidateSolid.CopiedTargetLoop2D.Reset();
+				bool bProjectionValid = true;
+				for (const FVector& WorldPoint : CandidateSolid.SourceLoopWorld)
+				{
+					FVector2D SourcePixel;
+					if (!ProjectWorldToImageOrthographic(
+						Inputs.Camera,
+						Inputs.FacesWidth,
+						Inputs.FacesHeight,
+						WorldPoint,
+						SourcePixel) ||
+						!IsFiniteVector2D(SourcePixel))
+					{
+						bProjectionValid = false;
+						break;
+					}
+					CandidateSolid.SourceLoop2D.Add(SourcePixel);
+					CandidateSolid.CopiedTargetLoop2D.Add(SourcePixel + CandidateSolid.SourceToCopiedVector2D);
+				}
+				if (!bProjectionValid ||
+					CandidateSolid.SourceLoop2D.Num() < 3 ||
+					CandidateSolid.CopiedTargetLoop2D.Num() != CandidateSolid.SourceLoop2D.Num())
+				{
+					Attempt.RegularizedProjectionTopology.bChecked = true;
+					Attempt.RegularizedProjectionTopology.Stage = TEXT("regularized_projection");
+					Attempt.RegularizedProjectionTopology.Reason =
+						TEXT("fallback regularized polygon failed orthographic reprojection; using raw projected cap");
+					SetRegularizationFallback(
+						CandidateSolid.CapBBoxRegularization,
+						TEXT("fallback regularized polygon failed orthographic reprojection; using raw projected cap"));
+					CandidateSolid.SourceLoop2D = RawProjectedSourceLoop2D;
+					CandidateSolid.CopiedTargetLoop2D = RawProjectedCopiedLoop2D;
+					CandidateSolid.SourceLoopWorld = RawProjectedSourceLoopWorld;
+					Attempt.bOrthogonalApplied = false;
+					Attempt.bOrthogonalFallbackToOriginal = true;
+				}
+				else if (!CheckSupportPlaneProjectionTopology(
+					TEXT("regularized_projection"),
+					CandidateSolid.SourceLoop2D,
+					CandidateSolid.SourceLoopWorld,
+					Attempt.AnchorWorld,
+					Attempt.SupportAwareAxisU,
+					Attempt.SupportAwareAxisV,
+					Attempt.RegularizedProjectionTopology))
+				{
+					SetRegularizationFallback(
+						CandidateSolid.CapBBoxRegularization,
+						FString::Printf(
+							TEXT("fallback regularized topology invalid: %s; using raw projected cap"),
+							*Attempt.RegularizedProjectionTopology.Reason));
+					CandidateSolid.SourceLoop2D = RawProjectedSourceLoop2D;
+					CandidateSolid.CopiedTargetLoop2D = RawProjectedCopiedLoop2D;
+					CandidateSolid.SourceLoopWorld = RawProjectedSourceLoopWorld;
+					Attempt.bOrthogonalApplied = false;
+					Attempt.bOrthogonalFallbackToOriginal = true;
+				}
+			}
+
+			if (CandidateSolid.SourceLoopWorld.Num() != CandidateSolid.SourceLoop2D.Num() ||
+				CandidateSolid.SourceLoop2D.Num() < 3)
+			{
+				Attempt.RejectReason = TEXT("fallback source loop invalid after orthogonal fallback");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			PopulateAttachFallbackAttemptProjectionDebug(Inputs, CandidateSolid, Attempt);
+			if (!CheckSupportPlaneProjectionTopology(
+				TEXT("final_projection"),
+				CandidateSolid.SourceLoop2D,
+				CandidateSolid.SourceLoopWorld,
+				Attempt.AnchorWorld,
+				Attempt.SupportAwareAxisU,
+				Attempt.SupportAwareAxisV,
+				Attempt.FinalProjectionTopology))
+			{
+				Attempt.RejectReason = FString::Printf(
+					TEXT("support_projection_topology_invalid(final): %s"),
+					*Attempt.FinalProjectionTopology.Reason);
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+
+			Attempt.ContactDistancePixels = DistancePointToClosedLoop2D(
+				Attempt.ChainStartFaceSpace,
+				CandidateSolid.SourceLoop2D);
+			Attempt.bContactPass = Attempt.ContactDistancePixels <= Params.ContactAnchorTolPx;
+			if (!Attempt.bContactPass)
+			{
+				Attempt.RejectReason = FString::Printf(
+					TEXT("green anchor distance %.3f px exceeds contact tolerance %.3f"),
+					Attempt.ContactDistancePixels,
+					Params.ContactAnchorTolPx);
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+
+			if (!CheckAttachSupportNoPenetration(
+				Inputs,
+				SupportFace,
+				CandidateSolid.SourceLoop2D,
+				CandidateSolid.SourceLoopWorld,
+				Params.NoPenetrationTolCm,
+				Attempt.MaxNoPenetrationViolationCm,
+				NoPenetrationError,
+				&Attempt.NoPenetrationSamplePixels,
+				&Attempt.NoPenetrationBaseWorld,
+				&Attempt.NoPenetrationSupportWorld,
+				&Attempt.NoPenetrationViolationCm,
+				/*bStopOnFirstFailure*/ false))
+			{
+				Attempt.bForceable = true;
+				Attempt.ForceableReason = TEXT("no_penetration_exceeded_threshold_final");
+				Attempt.RejectReason = FString::Printf(TEXT("final no-penetration failed: %s"), *NoPenetrationError);
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			Attempt.bNoPenetrationPass = true;
+
+			CandidateSolid.CopiedLoopWorld.Reset();
+			CandidateSolid.CopiedLoopWorld.Reserve(CandidateSolid.SourceLoopWorld.Num());
+			for (const FVector& P : CandidateSolid.SourceLoopWorld)
+			{
+				CandidateSolid.CopiedLoopWorld.Add(P + Attempt.ExtrusionVectorWorld);
+			}
+			CandidateSolid.MaxDepthSampleReprojectionErrorPixels =
+				FMath::Max(25.0, CandidateSolid.SourceToCopiedVector2D.Size() * 0.75);
+			if (!ProjectSignedWorldDirectionToImage(
+				Inputs.Camera,
+				Inputs.FacesWidth,
+				Inputs.FacesHeight,
+				CandidateSolid.OrientedNormal,
+				CandidateSolid.ProjectedNormal2D))
+			{
+				Attempt.RejectReason = TEXT("fallback base-plane normal projects to a near-zero image direction");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			if (FVector2D::DotProduct(
+				CandidateSolid.ProjectedNormal2D,
+				CandidateSolid.SourceToCopiedVector2D.GetSafeNormal()) < 0.0)
+			{
+				CandidateSolid.ProjectedNormal2D *= -1.0;
+			}
+
+			FString ReprojectionError;
+			if (!ReprojectSolidLoops(Inputs, CandidateSolid, ReprojectionError))
+			{
+				Attempt.MaxReprojectionErrorPixels = CandidateSolid.MaxCopiedReprojectionErrorPixels;
+				Attempt.RejectReason = ReprojectionError;
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			Attempt.MaxReprojectionErrorPixels = CandidateSolid.MaxCopiedReprojectionErrorPixels;
+			Attempt.bReprojectionPass = true;
+
+			if (!BuildSolidMeshTriangles(
+				CandidateSolid.SourceLoop2D,
+				CandidateSolid.CopiedTargetLoop2D,
+				CandidateSolid.SourceLoopWorld,
+				CandidateSolid.CopiedLoopWorld,
+				CandidateSolid.OrientedNormal,
+				CandidateSolid.MeshVerticesWorld,
+				CandidateSolid.MeshTriangles,
+				CandidateSolid.MeshNormal))
+			{
+				Attempt.RejectReason = TEXT("failed to triangulate fallback solid");
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+			if (bBelowPreferredGreenChord)
+			{
+				Attempt.bForceable = true;
+				Attempt.ForceableReason = TEXT("green_chord_below_preferred_length");
+				Attempt.RejectReason = FString::Printf(
+					TEXT("3D green chord %.6f cm is below preferred %.6f cm but above hard minimum %.6f cm"),
+					GreenChordWorldCm,
+					double(Params.SupportForcePreferredMinGreenChordCm),
+					double(Params.SupportForceHardMinGreenChordCm));
+				OutDebug.Attempts.Add(Attempt);
+				continue;
+			}
+
+			CandidateSolid.SourceMaterialProbePointsWorld = SupportFace.KeyPoints3D;
+			CandidateSolid.SourceMaterialProbePointsWorld.Add(AverageVector(SupportFace.KeyPoints3D));
+			CandidateSolid.bSuccess = true;
+			Attempt.bSuccess = true;
+			Attempt.RejectReason = TEXT("passed; candidate for nearest-camera support selection");
+			const int32 AttemptIndex = OutDebug.Attempts.Add(Attempt);
+			const bool bCloserSupport =
+				!bHasBestSuccessfulAttempt ||
+				Attempt.SupportMinCameraDistance < BestSuccessfulSupportMinCameraDistance - 1e-6;
+			const bool bTieBetterNoPenetration =
+				bHasBestSuccessfulAttempt &&
+				FMath::IsNearlyEqual(
+					Attempt.SupportMinCameraDistance,
+					BestSuccessfulSupportMinCameraDistance,
+					1e-6) &&
+				Attempt.MaxNoPenetrationViolationCm < BestSuccessfulNoPenetrationViolationCm - 1e-6;
+			const bool bTieBetterReprojection =
+				bHasBestSuccessfulAttempt &&
+				FMath::IsNearlyEqual(
+					Attempt.SupportMinCameraDistance,
+					BestSuccessfulSupportMinCameraDistance,
+					1e-6) &&
+				FMath::IsNearlyEqual(
+					Attempt.MaxNoPenetrationViolationCm,
+					BestSuccessfulNoPenetrationViolationCm,
+					1e-6) &&
+				Attempt.MaxReprojectionErrorPixels < BestSuccessfulReprojectionErrorPixels;
+			if (bCloserSupport || bTieBetterNoPenetration || bTieBetterReprojection)
+			{
+				bHasBestSuccessfulAttempt = true;
+				BestSuccessfulSupportMinCameraDistance = Attempt.SupportMinCameraDistance;
+				BestSuccessfulNoPenetrationViolationCm = Attempt.MaxNoPenetrationViolationCm;
+				BestSuccessfulReprojectionErrorPixels = Attempt.MaxReprojectionErrorPixels;
+				BestSuccessfulAttemptIndex = AttemptIndex;
+				BestSuccessfulSolid = MoveTemp(CandidateSolid);
+			}
+		}
+
+		if (bHasBestSuccessfulAttempt)
+		{
+			if (OutDebug.Attempts.IsValidIndex(BestSuccessfulAttemptIndex))
+			{
+				OutDebug.Attempts[BestSuccessfulAttemptIndex].RejectReason =
+					TEXT("selected_nearest_camera_support_face");
+			}
+			OutSolid = MoveTemp(BestSuccessfulSolid);
+			OutDebug.bSuccess = true;
+			OutDebug.Error = FString::Printf(
+				TEXT("selected nearest-camera support face %.6f cm; max no-penetration violation %.6f cm"),
+				BestSuccessfulSupportMinCameraDistance,
+				BestSuccessfulNoPenetrationViolationCm);
+			OutDebug.BestForceableAttemptIndex = SelectBestForceableSupportAttemptIndex(OutDebug);
+			OutDebug.BestForceableReason = OutDebug.Attempts.IsValidIndex(OutDebug.BestForceableAttemptIndex)
+				? OutDebug.Attempts[OutDebug.BestForceableAttemptIndex].ForceableReason
+				: FString();
+			SaveAttachSupportPlaneFallbackDebug(
+				OutDebug, Inputs, RawCapLoopFaceSpace,
+				ComponentDir / TEXT("10_attach_support_plane_fallback.json"),
+				ComponentDir / TEXT("10_attach_support_plane_fallback.png"));
+			return true;
+		}
+
+		OutDebug.Error = OutDebug.Attempts.Num() > 0
+			? OutDebug.Attempts.Last().RejectReason
+			: TEXT("no fallback attempt was made");
+		OutDebug.BestForceableAttemptIndex = SelectBestForceableSupportAttemptIndex(OutDebug);
+		OutDebug.BestForceableReason = OutDebug.Attempts.IsValidIndex(OutDebug.BestForceableAttemptIndex)
+			? OutDebug.Attempts[OutDebug.BestForceableAttemptIndex].ForceableReason
+			: FString();
+		SaveAttachSupportPlaneFallbackDebug(
+			OutDebug, Inputs, RawCapLoopFaceSpace,
+			ComponentDir / TEXT("10_attach_support_plane_fallback.json"),
+			ComponentDir / TEXT("10_attach_support_plane_fallback.png"));
+		return false;
+	}
+
+	static FVector ComputeWorldLoopAreaCentroid(const TArray<FVector>& Loop)
+	{
+		if (Loop.Num() == 0)
+		{
+			return FVector::ZeroVector;
+		}
+		if (Loop.Num() < 3)
+		{
+			return AverageVector(Loop);
+		}
+
+		const FVector Origin = Loop[0];
+		FVector Weighted = FVector::ZeroVector;
+		double AreaSum = 0.0;
+		for (int32 i = 1; i + 1 < Loop.Num(); ++i)
+		{
+			const FVector A = Loop[i] - Origin;
+			const FVector B = Loop[i + 1] - Origin;
+			const double Area = FVector::CrossProduct(A, B).Size() * 0.5;
+			if (Area <= KINDA_SMALL_NUMBER || !FMath::IsFinite(Area))
+			{
+				continue;
+			}
+			Weighted += (Origin + Loop[i] + Loop[i + 1]) * (Area / 3.0);
+			AreaSum += Area;
+		}
+		if (AreaSum <= KINDA_SMALL_NUMBER)
+		{
+			return AverageVector(Loop);
+		}
+		return Weighted / AreaSum;
+	}
+
+	static bool ComputeSolidFrontCapDistanceCm(
+		const FSolidReconstructionResult& Solid,
+		const FCommonInputs& Inputs,
+		double& OutFrontDistanceCm,
+		double& OutSourceDistanceCm,
+		double& OutCopiedDistanceCm,
+		FString& OutFrontLoopKey)
+	{
+		OutFrontDistanceCm = 0.0;
+		OutSourceDistanceCm = 0.0;
+		OutCopiedDistanceCm = 0.0;
+		OutFrontLoopKey.Reset();
+		if (!Solid.bSuccess ||
+			Solid.SourceLoopWorld.Num() < 3 ||
+			Solid.CopiedLoopWorld.Num() < 3)
+		{
+			return false;
+		}
+		const FVector SourceCentroid = ComputeWorldLoopAreaCentroid(Solid.SourceLoopWorld);
+		const FVector CopiedCentroid = ComputeWorldLoopAreaCentroid(Solid.CopiedLoopWorld);
+		OutSourceDistanceCm = FVector::Distance(Inputs.Camera.Location, SourceCentroid);
+		OutCopiedDistanceCm = FVector::Distance(Inputs.Camera.Location, CopiedCentroid);
+		if (OutSourceDistanceCm <= OutCopiedDistanceCm)
+		{
+			OutFrontDistanceCm = OutSourceDistanceCm;
+			OutFrontLoopKey = Solid.SourcePolygonKey;
+		}
+		else
+		{
+			OutFrontDistanceCm = OutCopiedDistanceCm;
+			OutFrontLoopKey = Solid.CopiedPolygonKey;
+		}
+		return FMath::IsFinite(OutFrontDistanceCm);
+	}
+
+	struct FAttachPathPlaneRelationDebug
+	{
+		bool bEvaluated = false;
+		bool bValid = false;
+		FString Reason;
+		FString DecisionRule;
+		double AngleTolDeg = 0.0;
+		double DistanceTolCm = 0.0;
+		double VirtualBaseVsDirectBaseAngleDeg = -1.0;
+		double SupportFaceVsDirectBaseAngleDeg = -1.0;
+		double VirtualBaseDirectPlaneDistanceCm = -1.0;
+		double SupportFaceDirectPlaneDistanceCm = -1.0;
+		bool bVirtualBasePerpendicularToDirectBase = false;
+		bool bSupportFacePerpendicularToDirectBase = false;
+		bool bVirtualBaseParallelToDirectBase = false;
+		bool bSupportFaceParallelToDirectBase = false;
+		bool bVirtualBaseMatchesDirectBase = false;
+		bool bSupportFaceMatchesDirectBase = false;
+		bool bSupportFaceIdMatchesDirectFaceId = false;
+		FVector DirectBasePoint = FVector::ZeroVector;
+		FVector DirectBaseNormal = FVector::UpVector;
+		FVector SupportVirtualBasePoint = FVector::ZeroVector;
+		FVector SupportVirtualBaseNormal = FVector::UpVector;
+		FVector SupportFacePoint = FVector::ZeroVector;
+		FVector SupportFaceNormal = FVector::UpVector;
+	};
+
+	static double ComputeUnorientedNormalAngleDeg(const FVector& A, const FVector& B)
+	{
+		const FVector NA = A.GetSafeNormal();
+		const FVector NB = B.GetSafeNormal();
+		if (NA.IsNearlyZero() || NB.IsNearlyZero() || !IsFiniteVector(NA) || !IsFiniteVector(NB))
+		{
+			return -1.0;
+		}
+
+		const double Dot = FMath::Clamp(FMath::Abs(FVector::DotProduct(NA, NB)), 0.0, 1.0);
+		return FMath::RadiansToDegrees(FMath::Acos(Dot));
+	}
+
+	static double ComputeAbsPointToPlaneDistanceCm(
+		const FVector& Point,
+		const FVector& PlanePoint,
+		const FVector& PlaneNormal)
+	{
+		const FVector N = PlaneNormal.GetSafeNormal();
+		if (N.IsNearlyZero() ||
+			!IsFiniteVector(Point) ||
+			!IsFiniteVector(PlanePoint) ||
+			!IsFiniteVector(N))
+		{
+			return -1.0;
+		}
+		return FMath::Abs(FVector::DotProduct(Point - PlanePoint, N));
+	}
+
+	static FAttachPathPlaneRelationDebug AnalyzeAttachPathPlaneRelation(
+		const FSolidReconstructionResult& DirectSolid,
+		const FSolidReconstructionResult& SupportSolid,
+		const FFromLZFaceReconstructionParams& Params)
+	{
+		FAttachPathPlaneRelationDebug Out;
+		Out.bEvaluated = DirectSolid.bSuccess && SupportSolid.bSuccess;
+		Out.AngleTolDeg = FMath::Max(0.0, double(Params.AttachPathPlaneRelationAngleTolDeg));
+		Out.DistanceTolCm = FMath::Max(0.0, double(Params.AttachPathPlaneRelationDistanceTolCm));
+		Out.DirectBasePoint = DirectSolid.SourcePlanePoint;
+		Out.DirectBaseNormal = DirectSolid.SourcePlaneNormal.GetSafeNormal();
+		Out.SupportVirtualBasePoint = SupportSolid.SourcePlanePoint;
+		Out.SupportVirtualBaseNormal = SupportSolid.SourcePlaneNormal.GetSafeNormal();
+		Out.SupportFacePoint = SupportSolid.SupportPlanePoint;
+		Out.SupportFaceNormal = SupportSolid.SupportPlaneNormal.GetSafeNormal();
+		Out.bSupportFaceIdMatchesDirectFaceId =
+			DirectSolid.SelectedFaceId >= 0 &&
+			SupportSolid.SupportFaceId >= 0 &&
+			DirectSolid.SelectedFaceId == SupportSolid.SupportFaceId;
+
+		if (!Out.bEvaluated)
+		{
+			Out.Reason = TEXT("direct and support solids were not both successful");
+			return Out;
+		}
+		if (Out.DirectBaseNormal.IsNearlyZero() ||
+			Out.SupportVirtualBaseNormal.IsNearlyZero() ||
+			Out.SupportFaceNormal.IsNearlyZero())
+		{
+			Out.Reason = TEXT("one or more plane normals are invalid");
+			return Out;
+		}
+
+		Out.VirtualBaseVsDirectBaseAngleDeg = ComputeUnorientedNormalAngleDeg(
+			Out.SupportVirtualBaseNormal,
+			Out.DirectBaseNormal);
+		Out.SupportFaceVsDirectBaseAngleDeg = ComputeUnorientedNormalAngleDeg(
+			Out.SupportFaceNormal,
+			Out.DirectBaseNormal);
+		Out.VirtualBaseDirectPlaneDistanceCm = ComputeAbsPointToPlaneDistanceCm(
+			Out.SupportVirtualBasePoint,
+			Out.DirectBasePoint,
+			Out.DirectBaseNormal);
+		Out.SupportFaceDirectPlaneDistanceCm = ComputeAbsPointToPlaneDistanceCm(
+			Out.SupportFacePoint,
+			Out.DirectBasePoint,
+			Out.DirectBaseNormal);
+
+		const bool bVirtualAngleValid = Out.VirtualBaseVsDirectBaseAngleDeg >= 0.0;
+		const bool bSupportAngleValid = Out.SupportFaceVsDirectBaseAngleDeg >= 0.0;
+		const bool bVirtualDistanceValid = Out.VirtualBaseDirectPlaneDistanceCm >= 0.0;
+		const bool bSupportDistanceValid = Out.SupportFaceDirectPlaneDistanceCm >= 0.0;
+		if (!bVirtualAngleValid || !bSupportAngleValid || !bVirtualDistanceValid || !bSupportDistanceValid)
+		{
+			Out.Reason = TEXT("failed to compute one or more plane relation metrics");
+			return Out;
+		}
+
+		Out.bVirtualBaseParallelToDirectBase = Out.VirtualBaseVsDirectBaseAngleDeg <= Out.AngleTolDeg;
+		Out.bSupportFaceParallelToDirectBase = Out.SupportFaceVsDirectBaseAngleDeg <= Out.AngleTolDeg;
+		Out.bVirtualBasePerpendicularToDirectBase =
+			FMath::Abs(90.0 - Out.VirtualBaseVsDirectBaseAngleDeg) <= Out.AngleTolDeg;
+		Out.bSupportFacePerpendicularToDirectBase =
+			FMath::Abs(90.0 - Out.SupportFaceVsDirectBaseAngleDeg) <= Out.AngleTolDeg;
+		Out.bVirtualBaseMatchesDirectBase =
+			Out.bVirtualBaseParallelToDirectBase &&
+			Out.VirtualBaseDirectPlaneDistanceCm <= Out.DistanceTolCm;
+		Out.bSupportFaceMatchesDirectBase =
+			Out.bSupportFaceIdMatchesDirectFaceId ||
+			(Out.bSupportFaceParallelToDirectBase &&
+				Out.SupportFaceDirectPlaneDistanceCm <= Out.DistanceTolCm);
+
+		Out.bValid = true;
+		Out.Reason = TEXT("plane relation metrics computed");
+		return Out;
+	}
+
+	static bool TryBuildForcedSupportSolidFromAttempt(
+		const FString& ComponentName,
+		const FString& PressDir,
+		int32 CapWidth,
+		int32 CapHeight,
+		int32 AttemptIndex,
+		const FAttachSupportPlaneFallbackAttempt& Attempt,
+		const FCommonInputs& Inputs,
+		const FFromLZFaceReconstructionParams& Params,
+		FSolidReconstructionResult& OutSolid,
+		FString& OutError)
+	{
+		OutError.Reset();
+		InitializeSolidResult(OutSolid, ComponentName, PressDir, Inputs);
+		OutSolid.Action = TEXT("attach");
+		OutSolid.ReconstructionMethod = TEXT("attach_support_plane_fallback_forced");
+		OutSolid.bAttachSupportPlaneFallback = true;
+		OutSolid.bForcedSupportPlaneOutput = true;
+		OutSolid.ForcedSupportPlaneReason = Attempt.ForceableReason;
+		OutSolid.ForcedSupportPlaneAttemptIndex = AttemptIndex;
+		OutSolid.SourcePolygonKey = TEXT("cap_polygon_support_plane_base");
+		OutSolid.CopiedPolygonKey = TEXT("cap_polygon_support_plane_extruded");
+		OutSolid.CapWidth = CapWidth;
+		OutSolid.CapHeight = CapHeight;
+
+		if (!Attempt.bForceable)
+		{
+			OutError = TEXT("attempt is not marked forceable");
+			return false;
+		}
+		if (!Attempt.RawProjectionTopology.bPass && !Attempt.FinalProjectionTopology.bPass)
+		{
+			OutError = TEXT("forceable support attempt did not pass raw or final projection topology checks");
+			return false;
+		}
+		if (!Attempt.bHasBaseProjection ||
+			Attempt.BaseLoop2D.Num() < 3 ||
+			Attempt.BaseLoopWorld.Num() != Attempt.BaseLoop2D.Num())
+		{
+			OutError = TEXT("forceable support attempt has no valid projected base loop");
+			return false;
+		}
+		if (Attempt.ExtrusionVectorWorld.Size() < FMath::Max(0.0f, Params.SupportForceHardMinGreenChordCm))
+		{
+			OutError = FString::Printf(
+				TEXT("forceable support attempt green chord %.6f cm is below hard minimum %.6f cm"),
+				Attempt.ExtrusionVectorWorld.Size(),
+				double(Params.SupportForceHardMinGreenChordCm));
+			return false;
+		}
+
+		const int32* SupportIndex = Inputs.FaceIndexById.Find(Attempt.SupportFaceId);
+		if (!SupportIndex || !Inputs.Faces.IsValidIndex(*SupportIndex))
+		{
+			OutError = TEXT("forceable support attempt references an unknown support face");
+			return false;
+		}
+		const FFaceInfo& SupportFace = Inputs.Faces[*SupportIndex];
+
+		OutSolid.SelectedFaceId = SupportFace.Id;
+		OutSolid.SupportFaceId = SupportFace.Id;
+		OutSolid.SupportGreenChainIndex = Attempt.ChainIndex;
+		OutSolid.SourcePlanePoint = Attempt.AnchorWorld;
+		OutSolid.SourcePlaneNormal = Attempt.BasePlaneNormal.GetSafeNormal();
+		OutSolid.SupportPlanePoint = SupportFace.PlanePoint;
+		OutSolid.SupportPlaneNormal = SupportFace.Normal.GetSafeNormal();
+		OutSolid.SourceFaceVerticesWorld = SupportFace.KeyPoints3D;
+		OutSolid.SourceMaterialProbePointsWorld = SupportFace.KeyPoints3D;
+		OutSolid.SourceMaterialProbePointsWorld.Add(AverageVector(SupportFace.KeyPoints3D));
+		OutSolid.OrientedNormal = OutSolid.SourcePlaneNormal;
+		OutSolid.ExtrusionVectorWorld = Attempt.ExtrusionVectorWorld;
+		OutSolid.ExtrusionDepth = Attempt.ExtrusionVectorWorld.Size();
+		OutSolid.SourceLoop2D = Attempt.BaseLoop2D;
+		OutSolid.SourceLoopWorld = Attempt.BaseLoopWorld;
+		OutSolid.SourceToCopiedVector2D = Attempt.ChainEndFaceSpace - Attempt.ChainStartFaceSpace;
+		OutSolid.CopiedTargetLoop2D = Attempt.CopiedTargetLoop2D;
+		if (OutSolid.CopiedTargetLoop2D.Num() != OutSolid.SourceLoop2D.Num())
+		{
+			OutSolid.CopiedTargetLoop2D.Reset();
+			OutSolid.CopiedTargetLoop2D.Reserve(OutSolid.SourceLoop2D.Num());
+			for (const FVector2D& P : OutSolid.SourceLoop2D)
+			{
+				OutSolid.CopiedTargetLoop2D.Add(P + OutSolid.SourceToCopiedVector2D);
+			}
+		}
+		OutSolid.CopiedLoopWorld = Attempt.CopiedLoopWorld;
+		if (OutSolid.CopiedLoopWorld.Num() != OutSolid.SourceLoopWorld.Num())
+		{
+			OutSolid.CopiedLoopWorld.Reset();
+			OutSolid.CopiedLoopWorld.Reserve(OutSolid.SourceLoopWorld.Num());
+			for (const FVector& P : OutSolid.SourceLoopWorld)
+			{
+				OutSolid.CopiedLoopWorld.Add(P + OutSolid.ExtrusionVectorWorld);
+			}
+		}
+
+		OutSolid.CapBBoxRegularization.bAttempted = Attempt.bOrthogonalAttempted;
+		OutSolid.CapBBoxRegularization.bApplied = Attempt.bOrthogonalApplied;
+		OutSolid.CapBBoxRegularization.bFallbackToOriginal = Attempt.bOrthogonalFallbackToOriginal;
+		OutSolid.CapBBoxRegularization.SelectedFaceId = SupportFace.Id;
+		OutSolid.CapBBoxRegularization.Action = TEXT("attach");
+		OutSolid.CapBBoxRegularization.SourcePolygonKey = OutSolid.SourcePolygonKey;
+		OutSolid.CapBBoxRegularization.CopiedPolygonKey = OutSolid.CopiedPolygonKey;
+		OutSolid.CapBBoxRegularization.RejectionReason =
+			FString::Printf(TEXT("forced support-plane output from attempt %d: %s"), AttemptIndex, *Attempt.ForceableReason);
+
+		OutSolid.MaxDepthSampleReprojectionErrorPixels =
+			FMath::Max(25.0, OutSolid.SourceToCopiedVector2D.Size() * 0.75);
+		if (!ProjectSignedWorldDirectionToImage(
+			Inputs.Camera,
+			Inputs.FacesWidth,
+			Inputs.FacesHeight,
+			OutSolid.OrientedNormal,
+			OutSolid.ProjectedNormal2D))
+		{
+			OutError = TEXT("forced support base-plane normal projects to a near-zero image direction");
+			return false;
+		}
+		if (FVector2D::DotProduct(
+			OutSolid.ProjectedNormal2D,
+			OutSolid.SourceToCopiedVector2D.GetSafeNormal()) < 0.0)
+		{
+			OutSolid.ProjectedNormal2D *= -1.0;
+		}
+
+		FString ReprojectionError;
+		if (!ReprojectSolidLoops(Inputs, OutSolid, ReprojectionError))
+		{
+			OutError = ReprojectionError;
+			return false;
+		}
+		if (!BuildSolidMeshTriangles(
+			OutSolid.SourceLoop2D,
+			OutSolid.CopiedTargetLoop2D,
+			OutSolid.SourceLoopWorld,
+			OutSolid.CopiedLoopWorld,
+			OutSolid.OrientedNormal,
+			OutSolid.MeshVerticesWorld,
+			OutSolid.MeshTriangles,
+			OutSolid.MeshNormal))
+		{
+			OutError = TEXT("failed to triangulate forced support fallback solid");
+			return false;
+		}
+
+		OutSolid.Warning = FString::Printf(
+			TEXT("forced support-plane fallback output from attempt %d: %s"),
+			AttemptIndex,
+			*Attempt.ForceableReason);
+		OutSolid.bSuccess = true;
+		return true;
+	}
+
+	static bool TryBuildBestForceableSupportSolid(
+		const FString& ComponentName,
+		const FString& PressDir,
+		int32 CapWidth,
+		int32 CapHeight,
+		const FCommonInputs& Inputs,
+		const FFromLZFaceReconstructionParams& Params,
+		const FAttachSupportPlaneFallbackDebug& Debug,
+		FSolidReconstructionResult& OutSolid,
+		int32& OutAttemptIndex,
+		FString& OutReason)
+	{
+		OutAttemptIndex = SelectBestForceableSupportAttemptIndex(Debug);
+		OutReason.Reset();
+		if (!Debug.Attempts.IsValidIndex(OutAttemptIndex))
+		{
+			OutAttemptIndex = INDEX_NONE;
+			return false;
+		}
+		const FAttachSupportPlaneFallbackAttempt& Attempt = Debug.Attempts[OutAttemptIndex];
+		OutReason = Attempt.ForceableReason;
+		FString BuildError;
+		if (!TryBuildForcedSupportSolidFromAttempt(
+			ComponentName,
+			PressDir,
+			CapWidth,
+			CapHeight,
+			OutAttemptIndex,
+			Attempt,
+			Inputs,
+			Params,
+			OutSolid,
+			BuildError))
+		{
+			OutReason = FString::Printf(TEXT("%s; forced rebuild failed: %s"), *Attempt.ForceableReason, *BuildError);
+			OutAttemptIndex = INDEX_NONE;
+			return false;
+		}
+		return true;
+	}
+
+	static const TArray<FVector2D>& SolidDebugSourceLoop2D(const FSolidReconstructionResult& Solid)
+	{
+		return Solid.ReprojectedSourceLoop2D.Num() >= 3 ? Solid.ReprojectedSourceLoop2D : Solid.SourceLoop2D;
+	}
+
+	static const TArray<FVector2D>& SolidDebugCopiedLoop2D(const FSolidReconstructionResult& Solid)
+	{
+		return Solid.ReprojectedCopiedLoop2D.Num() >= 3 ? Solid.ReprojectedCopiedLoop2D : Solid.CopiedTargetLoop2D;
+	}
+
+	static void SaveAttachPathSelectionDebug(
+		const FCommonInputs& Inputs,
+		const FSolidReconstructionResult* DirectSolid,
+		bool bDirectSuccess,
+		const FString& DirectError,
+		double DirectFrontDistanceCm,
+		double DirectSourceDistanceCm,
+		double DirectCopiedDistanceCm,
+		const FString& DirectFrontLoopKey,
+		const FSolidReconstructionResult* SupportSolid,
+		bool bSupportSuccess,
+		const FString& SupportError,
+		double SupportFrontDistanceCm,
+		double SupportSourceDistanceCm,
+		double SupportCopiedDistanceCm,
+		const FString& SupportFrontLoopKey,
+		const FSolidReconstructionResult* ForcedSolid,
+		bool bForcedSupportAvailable,
+		int32 ForcedAttemptIndex,
+		const FString& ForcedReason,
+		const FString& ChosenPath,
+		const FString& SelectionReason,
+		double AttachPathFrontDistanceTieTolCm,
+		const FAttachPathPlaneRelationDebug& PlaneRelation,
+		const FString& JsonPath,
+		const FString& PngPath)
+	{
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetStringField(TEXT("chosen_attach_path"), ChosenPath);
+		Root->SetStringField(TEXT("selection_reason"), SelectionReason);
+		Root->SetNumberField(TEXT("attach_path_front_distance_tie_tol_cm"), AttachPathFrontDistanceTieTolCm);
+		Root->SetBoolField(TEXT("plane_relation_evaluated"), PlaneRelation.bEvaluated);
+		Root->SetBoolField(TEXT("plane_relation_valid"), PlaneRelation.bValid);
+		Root->SetStringField(TEXT("plane_relation_reason"), PlaneRelation.Reason);
+		Root->SetStringField(TEXT("plane_relation_decision_rule"), PlaneRelation.DecisionRule);
+		Root->SetNumberField(TEXT("attach_path_plane_relation_angle_tol_deg"), PlaneRelation.AngleTolDeg);
+		Root->SetNumberField(TEXT("attach_path_plane_relation_distance_tol_cm"), PlaneRelation.DistanceTolCm);
+		Root->SetNumberField(TEXT("support_virtual_base_vs_direct_base_angle_degrees"), PlaneRelation.VirtualBaseVsDirectBaseAngleDeg);
+		Root->SetNumberField(TEXT("support_face_vs_direct_base_angle_degrees"), PlaneRelation.SupportFaceVsDirectBaseAngleDeg);
+		Root->SetNumberField(TEXT("support_virtual_base_direct_plane_distance_cm"), PlaneRelation.VirtualBaseDirectPlaneDistanceCm);
+		Root->SetNumberField(TEXT("support_face_direct_plane_distance_cm"), PlaneRelation.SupportFaceDirectPlaneDistanceCm);
+		Root->SetBoolField(TEXT("support_virtual_base_perpendicular_to_direct_base"), PlaneRelation.bVirtualBasePerpendicularToDirectBase);
+		Root->SetBoolField(TEXT("support_face_perpendicular_to_direct_base"), PlaneRelation.bSupportFacePerpendicularToDirectBase);
+		Root->SetBoolField(TEXT("support_virtual_base_parallel_to_direct_base"), PlaneRelation.bVirtualBaseParallelToDirectBase);
+		Root->SetBoolField(TEXT("support_face_parallel_to_direct_base"), PlaneRelation.bSupportFaceParallelToDirectBase);
+		Root->SetBoolField(TEXT("support_virtual_base_matches_direct_base"), PlaneRelation.bVirtualBaseMatchesDirectBase);
+		Root->SetBoolField(TEXT("support_face_matches_direct_base"), PlaneRelation.bSupportFaceMatchesDirectBase);
+		Root->SetBoolField(TEXT("support_face_id_matches_direct_face_id"), PlaneRelation.bSupportFaceIdMatchesDirectFaceId);
+		Root->SetArrayField(TEXT("direct_base_point"), JsonVector(PlaneRelation.DirectBasePoint)->AsArray());
+		Root->SetArrayField(TEXT("direct_base_normal"), JsonVector(PlaneRelation.DirectBaseNormal)->AsArray());
+		Root->SetArrayField(TEXT("support_virtual_base_point"), JsonVector(PlaneRelation.SupportVirtualBasePoint)->AsArray());
+		Root->SetArrayField(TEXT("support_virtual_base_normal"), JsonVector(PlaneRelation.SupportVirtualBaseNormal)->AsArray());
+		Root->SetArrayField(TEXT("support_face_point"), JsonVector(PlaneRelation.SupportFacePoint)->AsArray());
+		Root->SetArrayField(TEXT("support_face_normal"), JsonVector(PlaneRelation.SupportFaceNormal)->AsArray());
+		Root->SetBoolField(TEXT("direct_success"), bDirectSuccess);
+		Root->SetStringField(TEXT("direct_error"), DirectError);
+		Root->SetNumberField(TEXT("direct_front_distance_cm"), DirectFrontDistanceCm);
+		Root->SetNumberField(TEXT("direct_source_distance_cm"), DirectSourceDistanceCm);
+		Root->SetNumberField(TEXT("direct_copied_distance_cm"), DirectCopiedDistanceCm);
+		Root->SetStringField(TEXT("direct_front_loop_key"), DirectFrontLoopKey);
+		if (DirectSolid)
+		{
+			Root->SetStringField(TEXT("direct_reconstruction_method"), DirectSolid->ReconstructionMethod);
+			Root->SetNumberField(TEXT("direct_selected_face_id"), DirectSolid->SelectedFaceId);
+		}
+		Root->SetBoolField(TEXT("support_success"), bSupportSuccess);
+		Root->SetStringField(TEXT("support_error"), SupportError);
+		Root->SetNumberField(TEXT("support_front_distance_cm"), SupportFrontDistanceCm);
+		Root->SetNumberField(TEXT("support_source_distance_cm"), SupportSourceDistanceCm);
+		Root->SetNumberField(TEXT("support_copied_distance_cm"), SupportCopiedDistanceCm);
+		Root->SetStringField(TEXT("support_front_loop_key"), SupportFrontLoopKey);
+		if (SupportSolid)
+		{
+			Root->SetStringField(TEXT("support_reconstruction_method"), SupportSolid->ReconstructionMethod);
+			Root->SetNumberField(TEXT("support_selected_face_id"), SupportSolid->SelectedFaceId);
+			Root->SetNumberField(TEXT("support_face_id"), SupportSolid->SupportFaceId);
+			Root->SetNumberField(TEXT("support_green_chain_index"), SupportSolid->SupportGreenChainIndex);
+		}
+		Root->SetBoolField(TEXT("forced_support_available"), bForcedSupportAvailable);
+		Root->SetNumberField(TEXT("forced_support_attempt_index"), ForcedAttemptIndex);
+		Root->SetStringField(TEXT("forced_support_reason"), ForcedReason);
+		if (ForcedSolid)
+		{
+			Root->SetStringField(TEXT("forced_support_reconstruction_method"), ForcedSolid->ReconstructionMethod);
+			Root->SetNumberField(TEXT("forced_support_face_id"), ForcedSolid->SupportFaceId);
+			Root->SetNumberField(TEXT("forced_support_green_chain_index"), ForcedSolid->SupportGreenChainIndex);
+		}
+		SaveJsonObject(Root, JsonPath);
+
+		if (Inputs.FacesRGBA.Num() < Inputs.FacesWidth * Inputs.FacesHeight * 4)
+		{
+			return;
+		}
+		TArray<uint8> RGBA = Inputs.FacesRGBA;
+		if (DirectSolid)
+		{
+			DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, SolidDebugSourceLoop2D(*DirectSolid), FColor(40, 120, 255, 255), 3);
+			DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, SolidDebugCopiedLoop2D(*DirectSolid), FColor(160, 80, 255, 255), 2);
+		}
+		if (SupportSolid)
+		{
+			DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, SolidDebugSourceLoop2D(*SupportSolid), FColor(0, 230, 255, 255), 3);
+			DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, SolidDebugCopiedLoop2D(*SupportSolid), FColor(255, 150, 0, 255), 2);
+		}
+		if (ForcedSolid && !bSupportSuccess)
+		{
+			DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, SolidDebugSourceLoop2D(*ForcedSolid), FColor(255, 80, 40, 255), 4);
+			DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, SolidDebugCopiedLoop2D(*ForcedSolid), FColor(255, 225, 40, 255), 2);
+		}
+
+		auto DrawWorldNormalArrow = [&](const FVector& OriginWorld, const FVector& NormalWorld, const FColor& Color, int32 Radius)
+		{
+			const FVector N = NormalWorld.GetSafeNormal();
+			if (N.IsNearlyZero())
+			{
+				return;
+			}
+			FVector2D A;
+			FVector2D B;
+			const double ArrowLengthCm = 60.0;
+			if (ProjectWorldToImageOrthographic(Inputs.Camera, Inputs.FacesWidth, Inputs.FacesHeight, OriginWorld, A) &&
+				ProjectWorldToImageOrthographic(Inputs.Camera, Inputs.FacesWidth, Inputs.FacesHeight, OriginWorld + N * ArrowLengthCm, B))
+			{
+				DrawArrowRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, A, B, Color, Radius);
+			}
+		};
+
+		auto SourceLoopCentroidOrPlanePoint = [](const FSolidReconstructionResult* Solid) -> FVector
+		{
+			if (!Solid)
+			{
+				return FVector::ZeroVector;
+			}
+			return Solid->SourceLoopWorld.Num() >= 3
+				? ComputeWorldLoopAreaCentroid(Solid->SourceLoopWorld)
+				: Solid->SourcePlanePoint;
+		};
+
+		auto SupportFaceCentroidOrPlanePoint = [](const FSolidReconstructionResult* Solid) -> FVector
+		{
+			if (!Solid)
+			{
+				return FVector::ZeroVector;
+			}
+			return Solid->SourceFaceVerticesWorld.Num() > 0
+				? AverageVector(Solid->SourceFaceVerticesWorld)
+				: Solid->SupportPlanePoint;
+		};
+
+		if (DirectSolid)
+		{
+			DrawWorldNormalArrow(
+				SourceLoopCentroidOrPlanePoint(DirectSolid),
+				DirectSolid->SourcePlaneNormal,
+				FColor(40, 120, 255, 255),
+				3);
+		}
+		if (SupportSolid)
+		{
+			DrawWorldNormalArrow(
+				SourceLoopCentroidOrPlanePoint(SupportSolid),
+				SupportSolid->SourcePlaneNormal,
+				FColor(255, 40, 220, 255),
+				3);
+			DrawWorldNormalArrow(
+				SupportFaceCentroidOrPlanePoint(SupportSolid),
+				SupportSolid->SupportPlaneNormal,
+				FColor(255, 255, 255, 255),
+				3);
+		}
+
+		const FSolidReconstructionResult* ChosenSolid = nullptr;
+		if (ChosenPath == TEXT("direct"))
+		{
+			ChosenSolid = DirectSolid;
+		}
+		else if (ChosenPath == TEXT("support_plane"))
+		{
+			ChosenSolid = SupportSolid;
+		}
+		else if (ChosenPath == TEXT("forced_support_plane"))
+		{
+			ChosenSolid = ForcedSolid;
+		}
+		if (ChosenSolid)
+		{
+			DrawClosedPolylineRGBA(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, SolidDebugSourceLoop2D(*ChosenSolid), FColor(40, 255, 40, 255), 5);
+		}
+		SaveRGBAToPng(RGBA, Inputs.FacesWidth, Inputs.FacesHeight, PngPath);
+	}
+
 	static FComponentResult ProcessComponent(
 		const FString& ComponentName,
 		const FString& PressDir,
 		const FString& ActionPressDir,
-		const FCommonInputs& Inputs)
+		const FCommonInputs& Inputs,
+		const FFromLZFaceReconstructionParams& Params)
 	{
 		const FString ComponentDir = PressDir / ComponentName;
 		FComponentResult Result;
@@ -7891,6 +11675,12 @@ namespace
 
 		const double ScaleX = double(Inputs.FacesWidth) / double(Result.CapWidth);
 		const double ScaleY = double(Inputs.FacesHeight) / double(Result.CapHeight);
+		const double DirectMinOverlapRatio = FMath::Max(0.0, double(Params.CandidateFaceMinOverlapRatio));
+		const double DirectMaxNormalSideAngleDegrees = FMath::Max(0.0, double(Params.CandidateFaceMaxNormalSideAngleDegrees));
+		const double DirectPreferredNormalAngleDegrees = FMath::Max(0.0, double(Params.CandidateFacePreferredNormalSideAngleDegrees));
+		Result.CandidateFaceMinOverlapRatioUsed = DirectMinOverlapRatio;
+		Result.NormalParallelThresholdDegreesUsed = DirectMaxNormalSideAngleDegrees;
+		Result.PreferredNormalAngleThresholdDegreesUsed = DirectPreferredNormalAngleDegrees;
 		const FVector2D ScaledSideVector(SideVector.X * ScaleX, SideVector.Y * ScaleY);
 		if (ScaledSideVector.SizeSquared() < 1e-8)
 		{
@@ -7929,6 +11719,24 @@ namespace
 				Result.GreenSegEnds.Emplace(RawSegEnds[i].X * ScaleX, RawSegEnds[i].Y * ScaleY);
 			}
 		}
+		TArray<FFromLZGreenChainCandidate2D> GreenChains;
+		ParseGreenChainCandidates(CapJson, GreenChains);
+		if (GreenChains.Num() == 0)
+		{
+			const int32 LegacyCount = FMath::Min(RawSegStarts.Num(), RawSegEnds.Num());
+			for (int32 i = 0; i < LegacyCount; ++i)
+			{
+				FFromLZGreenChainCandidate2D Chain;
+				Chain.SeedStrokeId = i;
+				Chain.Start = RawSegStarts[i];
+				Chain.End = RawSegEnds[i];
+				Chain.Vector = Chain.End - Chain.Start;
+				Chain.ChordLength = Chain.Vector.Size();
+				Chain.PathLength = Chain.ChordLength;
+				Chain.StopReason = TEXT("legacy_side_segments_fallback");
+				GreenChains.Add(MoveTemp(Chain));
+			}
+		}
 
 		TArray<FVector2D> FaceSpacePoly;
 		FaceSpacePoly.Reserve(CapPoly.Num());
@@ -7943,7 +11751,7 @@ namespace
 			1,
 			FMath::CeilToInt(
 				double(Result.CapMaskPixels) *
-				FFromLZFaceReconstructor::CandidateFaceMinOverlapRatio));
+				DirectMinOverlapRatio));
 		SaveMaskPng(Mask, Inputs.FacesWidth, Inputs.FacesHeight, ComponentDir / TEXT("10_cap_mask.png"));
 		if (Result.CapMaskPixels <= 0)
 		{
@@ -8002,11 +11810,14 @@ namespace
 					Face, Candidate.ProjectedNormal2D);
 				if (Candidate.bHasProjectedNormal)
 				{
-					// Test the projected normal against every cap-connected green line;
-					// keep the smallest angle and orient the debug vector toward that green line.
+					// Test the projected normal against every cap-connected green line.
+					// Direct attach reconstructs from the translated/source cap back to
+					// the raw/copied cap, so its expected normal is opposite the green
+					// chain direction.
 					const FVector2D NormalDir = Candidate.ProjectedNormal2D.GetSafeNormal();
 					double BestAngle = 180.0;
 					FVector2D BestOrientedNormalDir = NormalDir;
+					const bool bAttachNormalCheck = Result.Action.Equals(TEXT("attach"), ESearchCase::IgnoreCase);
 					for (const FVector2D& Green : Result.GreenLineVectors2D)
 					{
 						const FVector2D GreenDir = Green.GetSafeNormal();
@@ -8014,7 +11825,8 @@ namespace
 						{
 							continue;
 						}
-						const double SignedDot = FVector2D::DotProduct(NormalDir, GreenDir);
+						const FVector2D ExpectedNormalDir = bAttachNormalCheck ? -GreenDir : GreenDir;
+						const double SignedDot = FVector2D::DotProduct(NormalDir, ExpectedNormalDir);
 						const double Dot = FMath::Clamp(FMath::Abs(SignedDot), 0.0, 1.0);
 						const double Angle = FMath::RadiansToDegrees(FMath::Acos(Dot));
 						if (Angle < BestAngle)
@@ -8024,8 +11836,10 @@ namespace
 						}
 					}
 					Candidate.ProjectedNormal2D = BestOrientedNormalDir;
+					Candidate.RawProjectedNormal2D = NormalDir;
+					Candidate.OrientedProjectedNormal2D = BestOrientedNormalDir;
 					Candidate.NormalGreenAngleDegrees = BestAngle;
-					Candidate.bNormalParallelPass = BestAngle <= NormalParallelThresholdDegrees;
+					Candidate.bNormalParallelPass = BestAngle <= DirectMaxNormalSideAngleDegrees;
 				}
 			}
 			Result.Candidates.Add(Candidate);
@@ -8056,7 +11870,7 @@ namespace
 				FallbackPlaneHit = Candidate.PlaneHit;
 			}
 
-			if (Candidate.NormalGreenAngleDegrees < PreferredNormalAngleThresholdDegrees &&
+			if (Candidate.NormalGreenAngleDegrees < DirectPreferredNormalAngleDegrees &&
 				Candidate.DistanceToCamera < BestPreferredDistance)
 			{
 				BestPreferredDistance = Candidate.DistanceToCamera;
@@ -8099,24 +11913,352 @@ namespace
 			Result.Candidates, Result.SelectedFaceId,
 			ComponentDir / TEXT("10_normal_green_check.png"));
 
+		const bool bIsAttachAction = Result.Action.Equals(TEXT("attach"), ESearchCase::IgnoreCase);
+		FAttachSupportPlaneFallbackDebug SupportFallbackDebug;
+		FSolidReconstructionResult SupportFallbackSolid;
+		FSolidReconstructionResult ForcedSupportFallbackSolid;
+		bool bSupportFallbackSuccess = false;
+		bool bForcedSupportFallbackAvailable = false;
+		int32 ForcedSupportAttemptIndex = INDEX_NONE;
+		FString ForcedSupportReason;
+		if (bIsAttachAction)
+		{
+			bSupportFallbackSuccess = TryBuildAttachSupportPlaneFallback(
+				ComponentName,
+				PressDir,
+				ComponentDir,
+				Result.CapWidth,
+				Result.CapHeight,
+				ScaleX,
+				ScaleY,
+				RawCapPolygon,
+				BoundaryRuns,
+				GreenChains,
+				Inputs,
+				Params,
+				SupportFallbackSolid,
+				SupportFallbackDebug);
+			bForcedSupportFallbackAvailable = TryBuildBestForceableSupportSolid(
+				ComponentName,
+				PressDir,
+				Result.CapWidth,
+				Result.CapHeight,
+				Inputs,
+				Params,
+				SupportFallbackDebug,
+				ForcedSupportFallbackSolid,
+				ForcedSupportAttemptIndex,
+				ForcedSupportReason);
+		}
+
+		auto SaveSupportFallbackDebugState = [&]()
+		{
+			if (!bIsAttachAction)
+			{
+				return;
+			}
+			TArray<FVector2D> RawCapLoopFaceSpace;
+			MapPolygonToFacesSpace(RawCapPolygon, ScaleX, ScaleY, RawCapLoopFaceSpace);
+			SaveAttachSupportPlaneFallbackDebug(
+				SupportFallbackDebug,
+				Inputs,
+				RawCapLoopFaceSpace,
+				ComponentDir / TEXT("10_attach_support_plane_fallback.json"),
+				ComponentDir / TEXT("10_attach_support_plane_fallback.png"));
+		};
+
+		auto ApplySupportSolidToResult = [&](const FSolidReconstructionResult& ChosenSolid, const FString& Warning)
+		{
+			Result.SelectedFaceId = ChosenSolid.SelectedFaceId;
+			Result.SelectedPlaneHit = ChosenSolid.SourcePlanePoint;
+			Result.Solid = ChosenSolid;
+			Result.Solid.Warning = Warning;
+			Result.PolygonKey = Result.Solid.SourcePolygonKey;
+
+			if (const int32* SupportIndex = Inputs.FaceIndexById.Find(Result.SelectedFaceId))
+			{
+				const FFaceInfo& SupportFace = Inputs.Faces[*SupportIndex];
+				Result.MeshVerticesWorld = SupportFace.KeyPoints3D;
+				Result.MeshTriangles.Reset();
+				TriangulatePolygon2D(SupportFace.KeyPoints2D, Result.MeshTriangles);
+				Result.MeshNormal = ComputeTriangleNormal(Result.MeshVerticesWorld, Result.MeshTriangles);
+				if (Result.MeshNormal.IsNearlyZero())
+				{
+					Result.MeshNormal = SupportFace.Normal;
+				}
+
+				if (Result.Solid.bSuccess && HasActorMaterialIdBuffer(Inputs))
+				{
+					FSolidReconstructionResult MaterialProbe = Result.Solid;
+					MaterialProbe.SourceLoop2D = SupportFace.KeyPoints2D;
+					MaterialProbe.SelectedFaceId = SupportFace.Id;
+					SelectAttachMaterialFromIdBuffer(Inputs, MaterialProbe, Result.Solid.AttachMaterialId);
+				}
+			}
+		};
+
+		auto SaveFinalSolidOutputs = [&]()
+		{
+			if (Result.Solid.CapBBoxRegularization.WorldOrthogonalStages.Num() == 0 &&
+				!Result.Solid.CapBBoxRegularization.bAttempted)
+			{
+				PrepareWorldOrthogonalNotAttemptedDebug(
+					Result.Solid.CapBBoxRegularization,
+					Result.Solid.Error.IsEmpty()
+						? TEXT("orthogonal regularization was not reached")
+						: Result.Solid.Error);
+			}
+			SaveComponentResultJson(Result, OutputJson);
+			SaveCapBBoxRegularizationDebug(
+				Result.Solid.CapBBoxRegularization,
+				ComponentDir);
+			SaveSolidResultJson(Result.Solid, SolidJson);
+			SaveSolidProjectionCheckPng(
+				Result.Solid, Inputs.FacesRGBA, Inputs.FacesWidth, Inputs.FacesHeight,
+				ComponentDir / TEXT("10_solid_projection_check.png"));
+		};
+
+		auto FinalizeAttachPathSelection = [&](bool bDirectSuccess, const FSolidReconstructionResult* DirectSolid, const FString& DirectFailureReason) -> bool
+		{
+			if (!bIsAttachAction)
+			{
+				return false;
+			}
+
+			double DirectFrontDistanceCm = 0.0;
+			double DirectSourceDistanceCm = 0.0;
+			double DirectCopiedDistanceCm = 0.0;
+			FString DirectFrontLoopKey;
+			const bool bDirectDistanceValid = DirectSolid &&
+				ComputeSolidFrontCapDistanceCm(
+					*DirectSolid,
+					Inputs,
+					DirectFrontDistanceCm,
+					DirectSourceDistanceCm,
+					DirectCopiedDistanceCm,
+					DirectFrontLoopKey);
+
+			double SupportFrontDistanceCm = 0.0;
+			double SupportSourceDistanceCm = 0.0;
+			double SupportCopiedDistanceCm = 0.0;
+			FString SupportFrontLoopKey;
+			const bool bSupportDistanceValid = bSupportFallbackSuccess &&
+				ComputeSolidFrontCapDistanceCm(
+					SupportFallbackSolid,
+					Inputs,
+					SupportFrontDistanceCm,
+					SupportSourceDistanceCm,
+					SupportCopiedDistanceCm,
+					SupportFrontLoopKey);
+
+			FAttachPathPlaneRelationDebug PlaneRelation;
+			if (bDirectSuccess && bSupportFallbackSuccess && DirectSolid)
+			{
+				PlaneRelation = AnalyzeAttachPathPlaneRelation(*DirectSolid, SupportFallbackSolid, Params);
+			}
+
+			FString ChosenPath = TEXT("none");
+			FString SelectionReason;
+			if (bDirectSuccess && bSupportFallbackSuccess)
+			{
+				if (!DirectSolid)
+				{
+					ChosenPath = TEXT("support_plane");
+					PlaneRelation.DecisionRule = TEXT("support_selected_direct_solid_missing");
+					SelectionReason = TEXT("support-plane fallback selected because direct attach reported success without a direct solid result");
+				}
+				else if (!PlaneRelation.bValid)
+				{
+					ChosenPath = TEXT("direct");
+					PlaneRelation.DecisionRule = TEXT("direct_selected_plane_relation_invalid");
+					SelectionReason = FString::Printf(
+						TEXT("direct selected because plane relation was invalid: %s"),
+						*PlaneRelation.Reason);
+				}
+				else if (PlaneRelation.bSupportFaceMatchesDirectBase)
+				{
+					ChosenPath = TEXT("direct");
+					PlaneRelation.DecisionRule = TEXT("direct_selected_support_face_matches_direct_base");
+					SelectionReason = FString::Printf(
+						TEXT("direct selected because support face matches direct base face (face id match=%s, support/direct angle %.6f deg, support/direct plane distance %.6f cm)"),
+						PlaneRelation.bSupportFaceIdMatchesDirectFaceId ? TEXT("true") : TEXT("false"),
+						PlaneRelation.SupportFaceVsDirectBaseAngleDeg,
+						PlaneRelation.SupportFaceDirectPlaneDistanceCm);
+				}
+				else if (PlaneRelation.bVirtualBasePerpendicularToDirectBase)
+				{
+					ChosenPath = TEXT("direct");
+					PlaneRelation.DecisionRule = TEXT("direct_selected_virtual_base_perpendicular_to_direct_base");
+					SelectionReason = FString::Printf(
+						TEXT("direct selected because support virtual base is perpendicular to direct base (virtual/direct angle %.6f deg, tol %.6f deg)"),
+						PlaneRelation.VirtualBaseVsDirectBaseAngleDeg,
+						PlaneRelation.AngleTolDeg);
+				}
+				else if (PlaneRelation.bSupportFacePerpendicularToDirectBase)
+				{
+					if (bDirectDistanceValid &&
+						bSupportDistanceValid &&
+						SupportFrontDistanceCm + double(Params.AttachPathFrontDistanceTieTolCm) < DirectFrontDistanceCm)
+					{
+						ChosenPath = TEXT("support_plane");
+						PlaneRelation.DecisionRule = TEXT("support_selected_support_face_perpendicular_and_front_closer");
+						SelectionReason = FString::Printf(
+							TEXT("support selected because support face is perpendicular to direct base and support front cap is closer to camera: %.6f cm vs direct %.6f cm, tie tol %.6f cm"),
+							SupportFrontDistanceCm,
+							DirectFrontDistanceCm,
+							double(Params.AttachPathFrontDistanceTieTolCm));
+					}
+					else
+					{
+						ChosenPath = TEXT("direct");
+						PlaneRelation.DecisionRule = TEXT("direct_selected_support_face_perpendicular_distance_tie_or_invalid");
+						SelectionReason = FString::Printf(
+							TEXT("direct selected because support face is perpendicular to direct base but support is not closer beyond tie tolerance: direct %.6f cm (valid=%s), support %.6f cm (valid=%s), tie tol %.6f cm"),
+							DirectFrontDistanceCm,
+							bDirectDistanceValid ? TEXT("true") : TEXT("false"),
+							SupportFrontDistanceCm,
+							bSupportDistanceValid ? TEXT("true") : TEXT("false"),
+							double(Params.AttachPathFrontDistanceTieTolCm));
+					}
+				}
+				else
+				{
+					ChosenPath = TEXT("direct");
+					PlaneRelation.DecisionRule = TEXT("direct_selected_support_face_not_perpendicular_to_direct_base");
+					SelectionReason = FString::Printf(
+						TEXT("direct selected because support face is not perpendicular to direct base (support/direct angle %.6f deg, tol %.6f deg; virtual/direct angle %.6f deg)"),
+						PlaneRelation.SupportFaceVsDirectBaseAngleDeg,
+						PlaneRelation.AngleTolDeg,
+						PlaneRelation.VirtualBaseVsDirectBaseAngleDeg);
+				}
+			}
+			else if (bSupportFallbackSuccess)
+			{
+				ChosenPath = TEXT("support_plane");
+				PlaneRelation.DecisionRule = TEXT("support_selected_direct_failed_or_unavailable");
+				SelectionReason = DirectFailureReason.IsEmpty()
+					? TEXT("support-plane fallback succeeded while direct attach was unavailable")
+					: FString::Printf(TEXT("direct attach failed: %s; support-plane fallback succeeded"), *DirectFailureReason);
+			}
+			else if (bDirectSuccess)
+			{
+				ChosenPath = TEXT("direct");
+				PlaneRelation.DecisionRule = TEXT("direct_selected_support_failed");
+				SelectionReason = SupportFallbackDebug.Error.IsEmpty()
+					? TEXT("direct attach succeeded and support-plane fallback did not produce a successful candidate")
+					: FString::Printf(TEXT("direct attach succeeded; support-plane fallback failed: %s"), *SupportFallbackDebug.Error);
+			}
+			else if (bForcedSupportFallbackAvailable)
+			{
+				ChosenPath = TEXT("forced_support_plane");
+				PlaneRelation.DecisionRule = TEXT("forced_support_selected_both_regular_paths_failed");
+				SelectionReason = DirectFailureReason.IsEmpty()
+					? FString::Printf(TEXT("forced support-plane output from attempt %d: %s"), ForcedSupportAttemptIndex, *ForcedSupportReason)
+					: FString::Printf(TEXT("direct attach failed: %s; forced support-plane output from attempt %d: %s"),
+						*DirectFailureReason,
+						ForcedSupportAttemptIndex,
+						*ForcedSupportReason);
+			}
+			else
+			{
+				PlaneRelation.DecisionRule = TEXT("none_selected_both_paths_failed");
+				SelectionReason = DirectFailureReason.IsEmpty()
+					? FString::Printf(TEXT("direct and support-plane attach both failed; support error: %s"), *SupportFallbackDebug.Error)
+					: FString::Printf(TEXT("direct attach failed: %s; support-plane fallback failed: %s"),
+						*DirectFailureReason,
+						*SupportFallbackDebug.Error);
+			}
+
+			SaveAttachPathSelectionDebug(
+				Inputs,
+				DirectSolid,
+				bDirectSuccess,
+				DirectFailureReason,
+				DirectFrontDistanceCm,
+				DirectSourceDistanceCm,
+				DirectCopiedDistanceCm,
+				DirectFrontLoopKey,
+				bSupportFallbackSuccess ? &SupportFallbackSolid : nullptr,
+				bSupportFallbackSuccess,
+				SupportFallbackDebug.Error,
+				SupportFrontDistanceCm,
+				SupportSourceDistanceCm,
+				SupportCopiedDistanceCm,
+				SupportFrontLoopKey,
+				bForcedSupportFallbackAvailable ? &ForcedSupportFallbackSolid : nullptr,
+				bForcedSupportFallbackAvailable,
+				ForcedSupportAttemptIndex,
+				ForcedSupportReason,
+				ChosenPath,
+				SelectionReason,
+				double(Params.AttachPathFrontDistanceTieTolCm),
+				PlaneRelation,
+				ComponentDir / TEXT("10_attach_path_selection.json"),
+				ComponentDir / TEXT("10_attach_path_selection.png"));
+
+			Result.AttachPathMode = TEXT("direct_and_support_evaluated");
+			Result.ChosenAttachPath = ChosenPath;
+			Result.AttachPathSelectionReason = SelectionReason;
+			if (ChosenPath == TEXT("support_plane"))
+			{
+				ApplySupportSolidToResult(
+					SupportFallbackSolid,
+					DirectFailureReason.IsEmpty()
+						? TEXT("support-plane fallback selected over direct attach")
+						: FString::Printf(TEXT("direct attach failed: %s; used support-plane fallback"), *DirectFailureReason));
+			}
+			else if (ChosenPath == TEXT("forced_support_plane"))
+			{
+				SupportFallbackDebug.bForcedOutput = true;
+				SupportFallbackDebug.ForcedAttemptIndex = ForcedSupportAttemptIndex;
+				SupportFallbackDebug.ForcedReason = ForcedSupportReason;
+				SaveSupportFallbackDebugState();
+				ApplySupportSolidToResult(
+					ForcedSupportFallbackSolid,
+					FString::Printf(TEXT("forced support-plane fallback output: %s"), *ForcedSupportReason));
+			}
+			else if (ChosenPath == TEXT("direct") && DirectSolid)
+			{
+				Result.Solid = *DirectSolid;
+			}
+			else
+			{
+				return false;
+			}
+
+			Result.Error.Reset();
+			Result.bSuccess = true;
+			SaveFinalSolidOutputs();
+			return true;
+		};
+
+		auto TryAttachSupportPlaneFallbackAndSave = [&](const FString& DirectFailureReason) -> bool
+		{
+			return FinalizeAttachPathSelection(false, nullptr, DirectFailureReason);
+		};
+
 		if (Result.SelectedFaceId < 0)
 		{
 			if (Result.Candidates.Num() == 0)
 			{
 				Result.Error = FString::Printf(
 					TEXT("No face survived the %.1f%% candidate mask-overlap threshold"),
-					FFromLZFaceReconstructor::CandidateFaceMinOverlapRatio * 100.0);
+					DirectMinOverlapRatio * 100.0);
 			}
 			else if (ParallelFaceIds.Num() == 0)
 			{
 				Result.Error = FString::Printf(
 					TEXT("No %.1f%% mask-overlap candidate passed the %.1f degree normal-to-green-line parallel filter"),
-					FFromLZFaceReconstructor::CandidateFaceMinOverlapRatio * 100.0,
-					NormalParallelThresholdDegrees);
+					DirectMinOverlapRatio * 100.0,
+					DirectMaxNormalSideAngleDegrees);
 			}
 			else
 			{
 				Result.Error = TEXT("No parallel face candidate had a valid camera-to-plane intersection");
+			}
+			if (TryAttachSupportPlaneFallbackAndSave(Result.Error))
+			{
+				return Result;
 			}
 			SaveFaceAndSkippedSolid(FString::Printf(TEXT("Solid skipped because Step 10 did not select a source face: %s"), *Result.Error));
 			return Result;
@@ -8124,6 +12266,10 @@ namespace
 		if (PreselectedFaceId < 0)
 		{
 			Result.Error = TEXT("Step 9 did not provide a valid preselected_face_id");
+			if (TryAttachSupportPlaneFallbackAndSave(Result.Error))
+			{
+				return Result;
+			}
 			SaveFaceAndSkippedSolid(FString::Printf(TEXT("Solid skipped because Step 9/10 face selection validation failed: %s"), *Result.Error));
 			return Result;
 		}
@@ -8133,6 +12279,10 @@ namespace
 				TEXT("Step 10 selected face %d but Step 9 preselected face %d"),
 				Result.SelectedFaceId,
 				PreselectedFaceId);
+			if (TryAttachSupportPlaneFallbackAndSave(Result.Error))
+			{
+				return Result;
+			}
 			SaveFaceAndSkippedSolid(FString::Printf(TEXT("Solid skipped because Step 9/10 face selection validation failed: %s"), *Result.Error));
 			return Result;
 		}
@@ -8141,6 +12291,10 @@ namespace
 		if (!SelectedIndex)
 		{
 			Result.Error = TEXT("Selected face id was not found in face table");
+			if (TryAttachSupportPlaneFallbackAndSave(Result.Error))
+			{
+				return Result;
+			}
 			SaveFaceAndSkippedSolid(FString::Printf(TEXT("Solid skipped because face reconstruction failed: %s"), *Result.Error));
 			return Result;
 		}
@@ -8150,6 +12304,10 @@ namespace
 		if (!TriangulatePolygon2D(SelectedFace.KeyPoints2D, Result.MeshTriangles))
 		{
 			Result.Error = TEXT("Failed to triangulate selected face");
+			if (TryAttachSupportPlaneFallbackAndSave(Result.Error))
+			{
+				return Result;
+			}
 			SaveFaceAndSkippedSolid(FString::Printf(TEXT("Solid skipped because face reconstruction failed: %s"), *Result.Error));
 			return Result;
 		}
@@ -8181,6 +12339,10 @@ namespace
 		{
 			const FString SolidError =
 				TEXT("Solid skipped because cap_polygon or cap_polygon_translated is missing from 09_cap_extrusion.json");
+			if (bHasCapPolygon && TryAttachSupportPlaneFallbackAndSave(SolidError))
+			{
+				return Result;
+			}
 			PrepareWorldOrthogonalNotAttemptedDebug(
 				Result.Solid.CapBBoxRegularization,
 				SolidError);
@@ -8220,7 +12382,23 @@ namespace
 			SourceRunTranslation,
 			SelectedFace,
 			Inputs);
-		if (Result.Solid.CapBBoxRegularization.WorldOrthogonalStages.Num() == 0)
+		if (!Result.Solid.bSuccess && TryAttachSupportPlaneFallbackAndSave(Result.Solid.Error))
+		{
+			return Result;
+		}
+		if (Result.Solid.bSuccess && Result.Action.Equals(TEXT("attach"), ESearchCase::IgnoreCase) && HasActorMaterialIdBuffer(Inputs))
+		{
+			SelectAttachMaterialFromIdBuffer(Inputs, Result.Solid, Result.Solid.AttachMaterialId);
+		}
+		if (bIsAttachAction)
+		{
+			if (FinalizeAttachPathSelection(Result.Solid.bSuccess, &Result.Solid, Result.Solid.Error))
+			{
+				return Result;
+			}
+		}
+		if (Result.Solid.CapBBoxRegularization.WorldOrthogonalStages.Num() == 0 &&
+			!Result.Solid.CapBBoxRegularization.bAttempted)
 		{
 			PrepareWorldOrthogonalNotAttemptedDebug(
 				Result.Solid.CapBBoxRegularization,
@@ -8231,10 +12409,6 @@ namespace
 		SaveCapBBoxRegularizationDebug(
 			Result.Solid.CapBBoxRegularization,
 			ComponentDir);
-		if (Result.Solid.bSuccess && Result.Action.Equals(TEXT("attach"), ESearchCase::IgnoreCase) && HasActorMaterialIdBuffer(Inputs))
-		{
-			SelectAttachMaterialFromIdBuffer(Inputs, Result.Solid, Result.Solid.AttachMaterialId);
-		}
 		SaveSolidResultJson(Result.Solid, SolidJson);
 		SaveSolidProjectionCheckPng(
 			Result.Solid, Inputs.FacesRGBA, Inputs.FacesWidth, Inputs.FacesHeight,
@@ -11416,6 +15590,7 @@ bool FFromLZFaceReconstructor::EvaluateCandidateFaces(
 	int32 SourceWidth,
 	int32 SourceHeight,
 	const TArray<FFromLZCandidateFaceRequest>& Requests,
+	const FFromLZFaceReconstructionParams& Params,
 	TArray<FFromLZCandidateFaceEvaluation>& OutEvaluations,
 	FString& OutError)
 {
@@ -11472,10 +15647,11 @@ bool FFromLZFaceReconstructor::EvaluateCandidateFaces(
 		{
 			FFromLZCandidateFaceEvaluation Evaluation;
 			Evaluation.bEvaluated = true;
+			Evaluation.EvaluationMode = TEXT("unsupported_action");
 			Evaluation.SourcePolygonKey = TEXT("cap_polygon");
 			Evaluation.RejectReason = FString::Printf(TEXT("unsupported candidate action: %s"), *Request.Action);
 			SaveCandidateFaceValidationDebug(
-				Request, Evaluation, Inputs, SourceWidth, SourceHeight,
+				Request, Evaluation, Params, Inputs, SourceWidth, SourceHeight,
 				TArray<uint8>(), TArray<FFaceCandidate>(), CandidateOutputDir);
 			OutEvaluations.Add(Evaluation);
 			continue;
@@ -11488,14 +15664,157 @@ bool FFromLZFaceReconstructor::EvaluateCandidateFaces(
 		FFromLZCandidateFaceEvaluation Evaluation = EvaluateSourcePolygonForFaces(
 			SourcePolygon,
 			Request.SideVectors,
+			Request.GreenChains,
+			bAttach,
 			SourceWidth,
 			SourceHeight,
 			SourcePolygonKey,
 			Inputs,
 			&Mask,
 			&Candidates);
+		if (!Evaluation.bValid && bAttach)
+		{
+			if (!Params.bEnableAttachSupportPlaneFallback)
+			{
+				Evaluation.SupportFaceRejectReason = TEXT("attach support-plane fallback disabled by params");
+			}
+			else
+			{
+				const double ScaleX = SourceWidth > 0 ? double(Inputs.FacesWidth) / double(SourceWidth) : 1.0;
+				const double ScaleY = SourceHeight > 0 ? double(Inputs.FacesHeight) / double(SourceHeight) : 1.0;
+				const double SupportFaceVoteMinCoverage = FMath::Clamp(
+					double(Params.SupportFaceVoteMinCoverage),
+					0.0,
+					1.0);
+				FString LastRejectReason = TEXT("no green chain candidates were available for support-plane fallback");
+				int32 BestAttemptOutputIndex = INDEX_NONE;
+				double BestAttemptCameraDistance = TNumericLimits<double>::Max();
+				double BestAttemptCoverage = -1.0;
+				int32 BestAttemptHitSampleCount = -1;
+				double BestAttemptPathLength = -1.0;
+				for (int32 ChainIndex = 0; ChainIndex < Request.GreenChains.Num(); ++ChainIndex)
+				{
+					const FFromLZGreenChainCandidate2D& Chain = Request.GreenChains[ChainIndex];
+					const FVector2D ChainStartFace(Chain.Start.X * ScaleX, Chain.Start.Y * ScaleY);
+					const FVector2D ChainEndFace(Chain.End.X * ScaleX, Chain.End.Y * ScaleY);
+					FFromLZSupportFaceVoteAttempt Attempt;
+					Attempt.ChainIndex = ChainIndex;
+					Attempt.SeedStrokeId = Chain.SeedStrokeId;
+					Attempt.ChainStartFaceSpace = ChainStartFace;
+					Attempt.ChainEndFaceSpace = ChainEndFace;
+					Attempt.ChainChordLength = Chain.ChordLength > 0.0 ? Chain.ChordLength : (Chain.End - Chain.Start).Size();
+					Attempt.ChainPathLength = Chain.PathLength > 0.0 ? Chain.PathLength : Attempt.ChainChordLength;
+					FSupportFaceVoteResult Vote;
+					if (!VoteSupportFaceForSegment(
+						Inputs,
+						ChainStartFace,
+						ChainEndFace,
+						Params.SupportFaceVoteRadiusPx,
+						FMath::Max(1.0, double(Params.SupportFaceVoteSampleStepPx)),
+						SupportFaceVoteMinCoverage,
+						Vote))
+					{
+						Attempt.SupportFaceCandidates = Vote.FaceCandidates;
+						Attempt.SupportVoteCoverage = Vote.Coverage;
+						Attempt.SupportVotePixelCoverage = Vote.VotePixelCoverage;
+						Attempt.SupportVotePixels = Vote.VotePixels;
+						Attempt.SupportConsideredPixels = Vote.ConsideredPixels;
+						Attempt.SupportHitSampleCount = Vote.HitSampleCount;
+						Attempt.SupportTotalSampleCount = Vote.TotalSampleCount;
+						Attempt.SupportFaceWorldZMax = Vote.WorldZMax;
+						Attempt.SupportFaceWorldZAverage = Vote.WorldZAverage;
+						Attempt.SupportMinCameraDistance = Vote.MinCameraDistance;
+						Attempt.SupportWorstPolygonDistancePx = Vote.WorstPolygonDistancePx;
+						Attempt.RejectReason = FString::Printf(
+							TEXT("chain %d rejected: %s"),
+							ChainIndex,
+							*Vote.Error);
+						LastRejectReason = Attempt.RejectReason;
+						Evaluation.SupportFaceVoteAttempts.Add(Attempt);
+						continue;
+					}
+					Attempt.bVoteFound = true;
+					Attempt.SupportFaceId = Vote.FaceId;
+					Attempt.SupportFaceCandidates = Vote.FaceCandidates;
+					Attempt.SupportVotePixels = Vote.VotePixels;
+					Attempt.SupportConsideredPixels = Vote.ConsideredPixels;
+					Attempt.SupportHitSampleCount = Vote.HitSampleCount;
+					Attempt.SupportTotalSampleCount = Vote.TotalSampleCount;
+					Attempt.SupportVoteCoverage = Vote.Coverage;
+					Attempt.SupportVotePixelCoverage = Vote.VotePixelCoverage;
+					Attempt.SupportFaceWorldZMax = Vote.WorldZMax;
+					Attempt.SupportFaceWorldZAverage = Vote.WorldZAverage;
+					Attempt.SupportMinCameraDistance = Vote.MinCameraDistance;
+					Attempt.SupportWorstPolygonDistancePx = Vote.WorstPolygonDistancePx;
+					Attempt.bCoveragePass = true;
+					Attempt.RejectReason = TEXT("coverage passed; candidate for nearest-camera support face selection");
+					const int32 AttemptOutputIndex = Evaluation.SupportFaceVoteAttempts.Add(Attempt);
+					const bool bCloser =
+						BestAttemptOutputIndex == INDEX_NONE ||
+						Attempt.SupportMinCameraDistance < BestAttemptCameraDistance - 1e-6;
+					const bool bTieBetterCoverage =
+						BestAttemptOutputIndex != INDEX_NONE &&
+						FMath::IsNearlyEqual(Attempt.SupportMinCameraDistance, BestAttemptCameraDistance, 1e-6) &&
+						Attempt.SupportVoteCoverage > BestAttemptCoverage + 1e-6;
+					const bool bTieMoreSamples =
+						BestAttemptOutputIndex != INDEX_NONE &&
+						FMath::IsNearlyEqual(Attempt.SupportMinCameraDistance, BestAttemptCameraDistance, 1e-6) &&
+						FMath::IsNearlyEqual(Attempt.SupportVoteCoverage, BestAttemptCoverage, 1e-6) &&
+						Attempt.SupportHitSampleCount > BestAttemptHitSampleCount;
+					const bool bTieLongerChain =
+						BestAttemptOutputIndex != INDEX_NONE &&
+						FMath::IsNearlyEqual(Attempt.SupportMinCameraDistance, BestAttemptCameraDistance, 1e-6) &&
+						FMath::IsNearlyEqual(Attempt.SupportVoteCoverage, BestAttemptCoverage, 1e-6) &&
+						Attempt.SupportHitSampleCount == BestAttemptHitSampleCount &&
+						Attempt.ChainPathLength > BestAttemptPathLength + 1e-6;
+					if (bCloser || bTieBetterCoverage || bTieMoreSamples || bTieLongerChain)
+					{
+						BestAttemptOutputIndex = AttemptOutputIndex;
+						BestAttemptCameraDistance = Attempt.SupportMinCameraDistance;
+						BestAttemptCoverage = Attempt.SupportVoteCoverage;
+						BestAttemptHitSampleCount = Attempt.SupportHitSampleCount;
+						BestAttemptPathLength = Attempt.ChainPathLength;
+					}
+				}
+				if (Evaluation.SupportFaceVoteAttempts.IsValidIndex(BestAttemptOutputIndex))
+				{
+					FFromLZSupportFaceVoteAttempt& BestAttempt = Evaluation.SupportFaceVoteAttempts[BestAttemptOutputIndex];
+					BestAttempt.bSelected = true;
+					BestAttempt.RejectReason = TEXT("selected nearest-camera support face after per-chain highest-Z selection");
+					Evaluation.bAttachSupportPlaneFallbackEligible = true;
+					Evaluation.EvaluationMode = TEXT("attach_support_plane_fallback_eligible");
+					Evaluation.SupportFaceId = BestAttempt.SupportFaceId;
+					Evaluation.SupportGreenChainIndex = BestAttempt.ChainIndex;
+					Evaluation.SupportFaceVoteCoverage = BestAttempt.SupportVoteCoverage;
+					Evaluation.SupportFaceRejectReason = FString::Printf(
+						TEXT("eligible via nearest-camera chain %d: face=%d hit_samples=%d/%d sample_coverage=%.3f vote_pixels=%d considered=%d vote_pixel_coverage=%.3f z_max=%.3f camera_distance=%.3f path_length=%.3f chord_length=%.3f"),
+						BestAttempt.ChainIndex,
+						BestAttempt.SupportFaceId,
+						BestAttempt.SupportHitSampleCount,
+						BestAttempt.SupportTotalSampleCount,
+						BestAttempt.SupportVoteCoverage,
+						BestAttempt.SupportVotePixels,
+						BestAttempt.SupportConsideredPixels,
+						BestAttempt.SupportVotePixelCoverage,
+						BestAttempt.SupportFaceWorldZMax,
+						BestAttempt.SupportMinCameraDistance,
+						BestAttempt.ChainPathLength,
+						BestAttempt.ChainChordLength);
+				}
+				else if (!Evaluation.bAttachSupportPlaneFallbackEligible)
+				{
+					Evaluation.SupportFaceRejectReason =
+						Request.GreenChains.Num() == 0
+							? LastRejectReason
+							: FString::Printf(
+								TEXT("no green chain passed support face vote threshold %.3f; see support_face_vote_attempts; last_reject=%s"),
+								SupportFaceVoteMinCoverage,
+								*LastRejectReason);
+				}
+			}
+		}
 		SaveCandidateFaceValidationDebug(
-			Request, Evaluation, Inputs, SourceWidth, SourceHeight,
+			Request, Evaluation, Params, Inputs, SourceWidth, SourceHeight,
 			Mask, Candidates, CandidateOutputDir);
 		OutEvaluations.Add(MoveTemp(Evaluation));
 	}
@@ -11506,6 +15825,23 @@ void FFromLZFaceReconstructor::ProcessPress(
 	const FString& PressDir,
 	const FString& ActionPressDir,
 	TWeakObjectPtr<UWorld> World,
+	int32 SessionGeneration,
+	FFromLZPressCompletionCallback CompletionCallback)
+{
+	ProcessPress(
+		PressDir,
+		ActionPressDir,
+		World,
+		FFromLZFaceReconstructionParams(),
+		SessionGeneration,
+		MoveTemp(CompletionCallback));
+}
+
+void FFromLZFaceReconstructor::ProcessPress(
+	const FString& PressDir,
+	const FString& ActionPressDir,
+	TWeakObjectPtr<UWorld> World,
+	const FFromLZFaceReconstructionParams& Params,
 	int32 SessionGeneration,
 	FFromLZPressCompletionCallback CompletionCallback)
 {
@@ -11522,6 +15858,29 @@ void FFromLZFaceReconstructor::ProcessPress(
 	}
 
 	const FString PressId = FPaths::GetCleanFilename(PressDir);
+	{
+		FString ParamsJson;
+		ParamsJson += TEXT("{\n");
+		ParamsJson += FString::Printf(TEXT("  \"candidate_face_min_overlap_ratio\": %.6f,\n"), Params.CandidateFaceMinOverlapRatio);
+		ParamsJson += FString::Printf(TEXT("  \"candidate_face_max_normal_side_angle_degrees\": %.6f,\n"), Params.CandidateFaceMaxNormalSideAngleDegrees);
+		ParamsJson += FString::Printf(TEXT("  \"candidate_face_preferred_normal_side_angle_degrees\": %.6f,\n"), Params.CandidateFacePreferredNormalSideAngleDegrees);
+		ParamsJson += FString::Printf(TEXT("  \"enable_attach_support_plane_fallback\": %s,\n"), Params.bEnableAttachSupportPlaneFallback ? TEXT("true") : TEXT("false"));
+		ParamsJson += FString::Printf(TEXT("  \"support_face_vote_radius_px\": %d,\n"), Params.SupportFaceVoteRadiusPx);
+		ParamsJson += FString::Printf(TEXT("  \"support_plane_polygon_tol_px\": %.6f,\n"), Params.SupportPlanePolygonTolPx);
+		ParamsJson += TEXT("  \"support_plane_polygon_check_enforced\": false,\n");
+		ParamsJson += FString::Printf(TEXT("  \"support_face_vote_sample_step_px\": %.6f,\n"), Params.SupportFaceVoteSampleStepPx);
+		ParamsJson += FString::Printf(TEXT("  \"support_face_vote_min_coverage\": %.6f,\n"), Params.SupportFaceVoteMinCoverage);
+		ParamsJson += FString::Printf(TEXT("  \"no_penetration_tol_cm\": %.6f,\n"), Params.NoPenetrationTolCm);
+		ParamsJson += FString::Printf(TEXT("  \"contact_anchor_tol_px\": %.6f,\n"), Params.ContactAnchorTolPx);
+		ParamsJson += FString::Printf(TEXT("  \"attach_path_front_distance_tie_tol_cm\": %.6f,\n"), Params.AttachPathFrontDistanceTieTolCm);
+		ParamsJson += FString::Printf(TEXT("  \"attach_path_plane_relation_angle_tol_deg\": %.6f,\n"), Params.AttachPathPlaneRelationAngleTolDeg);
+		ParamsJson += FString::Printf(TEXT("  \"attach_path_plane_relation_distance_tol_cm\": %.6f,\n"), Params.AttachPathPlaneRelationDistanceTolCm);
+		ParamsJson += FString::Printf(TEXT("  \"support_force_hard_min_green_chord_cm\": %.6f,\n"), Params.SupportForceHardMinGreenChordCm);
+		ParamsJson += FString::Printf(TEXT("  \"support_force_preferred_min_green_chord_cm\": %.6f\n"), Params.SupportForcePreferredMinGreenChordCm);
+		ParamsJson += TEXT("}\n");
+		FFileHelper::SaveStringToFile(ParamsJson, *(PressDir / TEXT("10_face_reconstruction_params.json")));
+	}
+
 	TArray<FString> ComponentNames;
 	IFileManager::Get().IterateDirectory(*PressDir, [&ComponentNames](const TCHAR* InPath, bool bIsDir) -> bool
 	{
@@ -11660,7 +16019,7 @@ void FFromLZFaceReconstructor::ProcessPress(
 	Results.SetNum(ComponentNames.Num());
 	FromLZProcessing::LimitedParallelFor(ComponentNames.Num(), [&](int32 Index)
 	{
-		Results[Index] = ProcessComponent(ComponentNames[Index], PressDir, ActionPressDir, Inputs);
+		Results[Index] = ProcessComponent(ComponentNames[Index], PressDir, ActionPressDir, Inputs, Params);
 	});
 	SaveWorldOrthogonalPressIndex(PressDir, Results);
 

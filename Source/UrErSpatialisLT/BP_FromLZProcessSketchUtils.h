@@ -115,6 +115,42 @@ struct FBPFromLZProcessParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10")
 	float CandidateFacePreferredNormalSideAngleDegrees = 10.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback")
+	bool bEnableAttachSupportPlaneFallback = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0", UIMin = "0"))
+	int32 SupportFaceVoteRadiusPx = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float SupportPlanePolygonTolPx = 15.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "1.0", UIMin = "1.0"))
+	float SupportFaceVoteSampleStepPx = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	float SupportFaceVoteMinCoverage = 0.20f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float NoPenetrationTolCm = 50.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float ContactAnchorTolPx = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float AttachPathFrontDistanceTieTolCm = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float AttachPathPlaneRelationAngleTolDeg = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float AttachPathPlaneRelationDistanceTolCm = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float SupportForceHardMinGreenChordCm = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Step 10|Attach Support Fallback", meta = (ClampMin = "0.0", UIMin = "0.0"))
+	float SupportForcePreferredMinGreenChordCm = 5.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Concurrency")
 	int32 CompositeMaxWorkers = 1;
 

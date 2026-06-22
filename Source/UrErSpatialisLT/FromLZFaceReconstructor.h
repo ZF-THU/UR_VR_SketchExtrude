@@ -31,6 +31,40 @@ struct FFromLZStep11UndoResult
 
 using FFromLZStep11UndoCompletionCallback = TFunction<void(const FFromLZStep11UndoResult& Result)>;
 
+struct FFromLZFaceReconstructionParams
+{
+	float CandidateFaceMinOverlapRatio = 0.25f;
+	float CandidateFaceMaxNormalSideAngleDegrees = 30.0f;
+	float CandidateFacePreferredNormalSideAngleDegrees = 10.0f;
+
+	bool bEnableAttachSupportPlaneFallback = true;
+	int32 SupportFaceVoteRadiusPx = 2;
+	float SupportPlanePolygonTolPx = 15.0f;
+	float SupportFaceVoteSampleStepPx = 5.0f;
+	float SupportFaceVoteMinCoverage = 0.20f;
+	float NoPenetrationTolCm = 50.0f;
+	float ContactAnchorTolPx = 20.0f;
+	float AttachPathFrontDistanceTieTolCm = 5.0f;
+	float AttachPathPlaneRelationAngleTolDeg = 10.0f;
+	float AttachPathPlaneRelationDistanceTolCm = 10.0f;
+	float SupportForceHardMinGreenChordCm = 1.0f;
+	float SupportForcePreferredMinGreenChordCm = 5.0f;
+};
+
+struct FFromLZGreenChainCandidate2D
+{
+	int32 SeedStrokeId = -1;
+	TArray<int32> StrokeIds;
+	FVector2D Start = FVector2D::ZeroVector;
+	FVector2D End = FVector2D::ZeroVector;
+	FVector2D Vector = FVector2D::ZeroVector;
+	FVector2D SeedDirection = FVector2D::ZeroVector;
+	double ChordLength = 0.0;
+	double PathLength = 0.0;
+	double TotalGap = 0.0;
+	FString StopReason;
+};
+
 struct FFromLZCandidateFaceRequest
 {
 	FString CandidateSource;
@@ -38,12 +72,57 @@ struct FFromLZCandidateFaceRequest
 	TArray<FVector2D> CapPolygon;
 	TArray<FVector2D> CapPolygonTranslated;
 	TArray<FVector2D> SideVectors;
+	TArray<FFromLZGreenChainCandidate2D> GreenChains;
+};
+
+struct FFromLZSupportFaceVoteCandidate
+{
+	int32 FaceId = -1;
+	int32 VotePixels = 0;
+	int32 HitSampleCount = 0;
+	int32 TotalSampleCount = 0;
+	int32 TotalFaceVotePixels = 0;
+	double SampleCoverage = 0.0;
+	double VotePixelCoverage = 0.0;
+	double WorldZMax = 0.0;
+	double WorldZAverage = 0.0;
+	double MinCameraDistance = 0.0;
+	double WorstPolygonDistancePx = 0.0;
+	bool bCoveragePass = false;
+	bool bSelectedForChain = false;
+};
+
+struct FFromLZSupportFaceVoteAttempt
+{
+	int32 ChainIndex = -1;
+	int32 SeedStrokeId = -1;
+	FVector2D ChainStartFaceSpace = FVector2D::ZeroVector;
+	FVector2D ChainEndFaceSpace = FVector2D::ZeroVector;
+	double ChainChordLength = 0.0;
+	double ChainPathLength = 0.0;
+	bool bVoteFound = false;
+	bool bCoveragePass = false;
+	bool bSelected = false;
+	int32 SupportFaceId = -1;
+	int32 SupportVotePixels = 0;
+	int32 SupportConsideredPixels = 0;
+	int32 SupportHitSampleCount = 0;
+	int32 SupportTotalSampleCount = 0;
+	double SupportVoteCoverage = 0.0;
+	double SupportVotePixelCoverage = 0.0;
+	double SupportFaceWorldZMax = 0.0;
+	double SupportFaceWorldZAverage = 0.0;
+	double SupportMinCameraDistance = 0.0;
+	double SupportWorstPolygonDistancePx = 0.0;
+	FString RejectReason;
+	TArray<FFromLZSupportFaceVoteCandidate> SupportFaceCandidates;
 };
 
 struct FFromLZCandidateFaceEvaluation
 {
 	bool bEvaluated = false;
 	bool bValid = false;
+	FString EvaluationMode;
 	FString SourcePolygonKey;
 	FString RejectReason;
 	int32 CapMaskPixels = 0;
@@ -53,6 +132,12 @@ struct FFromLZCandidateFaceEvaluation
 	double SelectedFaceNormalSideAngleDegrees = -1.0;
 	double SelectedFaceDistanceToCamera = 0.0;
 	FVector SelectedPlaneHit = FVector::ZeroVector;
+	bool bAttachSupportPlaneFallbackEligible = false;
+	int32 SupportFaceId = -1;
+	int32 SupportGreenChainIndex = -1;
+	double SupportFaceVoteCoverage = 0.0;
+	FString SupportFaceRejectReason;
+	TArray<FFromLZSupportFaceVoteAttempt> SupportFaceVoteAttempts;
 };
 
 class FFromLZFaceReconstructor
@@ -67,12 +152,20 @@ public:
 		int32 SourceWidth,
 		int32 SourceHeight,
 		const TArray<FFromLZCandidateFaceRequest>& Requests,
+		const FFromLZFaceReconstructionParams& Params,
 		TArray<FFromLZCandidateFaceEvaluation>& OutEvaluations,
 		FString& OutError);
 	static void ProcessPress(
 		const FString& PressDir,
 		const FString& ActionPressDir,
 		TWeakObjectPtr<UWorld> World,
+		int32 SessionGeneration = INDEX_NONE,
+		FFromLZPressCompletionCallback CompletionCallback = nullptr);
+	static void ProcessPress(
+		const FString& PressDir,
+		const FString& ActionPressDir,
+		TWeakObjectPtr<UWorld> World,
+		const FFromLZFaceReconstructionParams& Params,
 		int32 SessionGeneration = INDEX_NONE,
 		FFromLZPressCompletionCallback CompletionCallback = nullptr);
 	static void RestoreStep11RuntimeBooleans(
